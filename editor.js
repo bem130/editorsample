@@ -60,14 +60,21 @@ class CanvasEditor {
             gutterBackground: '#171a22ff', lineNumber: '#41454eff', lineNumberActive: '#bfc9daff',
             cursorLineBorder: 'rgba(255, 255, 255, 0.49)',
             tokenColors: {
+                // JavaScript
                 'keyword': '#c678dd', 'string': '#98c379', 'comment': '#5c6370',
                 'function': '#61afef', 'number': '#d19a66', 'boolean': '#d19a66',
                 'operator': '#56b6c2', 'regex': '#d19a66', 'property': '#e06c75',
-                'punctuation': '#b3a5b0ff', 'variable': '#7da5f0ff', 'default': '#b5b7bbff'
+                'punctuation': '#b3a5b0ff', 'variable': '#7da5f0ff',
+                // Markdown
+                'heading': '#e06c75', 'bold': '#d19a66', 'italic': '#c678dd',
+                'list': '#56b6c2', 'link': '#61afef', 'inline-code': '#98c379',
+                'code-block': '#5c6370',
+                // Default
+                'default': '#b5b7bbff'
             }
         };
 
-        this.text = 'class MyClass extends BaseClass {\n    #privateField = 123;\n\n    constructor() {\n        console.log("Hello, World!");\n        const regex = /ab+c/i;\n        this.value = true;\n    }\n\n    greet(name) {\n        return `Hello, ${name}`;\n    }\n}\n\nconst instance = new MyClass();\ninstance.greet("Editor");';
+        this.text = '';
         this.lines = []; this.cursor = 0; this.selectionStart = 0; this.selectionEnd = 0;
         this.isFocused = false; this.isComposing = false; this.compositionText = ''; this.isDragging = false;
         this.scrollX = 0; this.scrollY = 0; this.cursorBlinkState = true; this.lastBlinkTime = 0; this.blinkInterval = 500;
@@ -114,9 +121,37 @@ class CanvasEditor {
             this.langConfig = { ...this.langConfig, ...data.config };
             this.updateProblemsPanel();
         });
-        this.updateText(this.text);
+        // Clear previous language-specific state
+        this.tokens = [];
+        this.diagnostics = [];
+        this.foldingRanges = [];
+        this.langConfig = {};
+        this.highlightedOccurrences = [];
+        this.bracketHighlights = [];
+        this.updateProblemsPanel();
     }
     
+    /**
+     * エディタのテキストコンテンツを完全に置き換え、状態をリセットします。
+     * @param {string} text - 新しいテキストコンテンツ
+     */
+    setText(text) {
+        this.text = text;
+        this.cursor = 0;
+        this.selectionStart = 0;
+        this.selectionEnd = 0;
+        this.undoStack = [];
+        this.redoStack = [];
+        this.foldedLines.clear();
+        this.scrollX = 0;
+        this.scrollY = 0;
+        this.updateLines();
+        if (this.languageProvider) {
+            this.languageProvider.updateText(this.text);
+        }
+        this.scrollToCursor();
+    }
+
     updateText(text) {
         if (this.languageProvider) {
             this.languageProvider.updateText(text);
