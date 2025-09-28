@@ -28,8 +28,8 @@
  */
 
 class CanvasEditor {
-    constructor(canvas, textarea, popup) {
-        this.canvas = canvas; this.textarea = textarea; this.popup = popup; this.ctx = canvas.getContext('2d');
+    constructor(canvas, textarea, popup, problemsPanel) {
+        this.canvas = canvas; this.textarea = textarea; this.popup = popup; this.problemsPanel = problemsPanel; this.ctx = canvas.getContext('2d');
         this.font = '22px "Space Mono", "Noto Sans JP", monospace'; this.padding = 10; this.lineHeight = 30;
         this.h_width = 0; this.z_width = 0; this.charWidthCache = new Map();
         
@@ -41,7 +41,7 @@ class CanvasEditor {
             fullWidthSpace: 'rgba(100, 150, 200, 0.2)',
             tab: 'rgba(100, 150, 200, 0.2)',
             whitespaceSymbol: '#4a505e', overwriteCursor: 'rgba(82, 139, 255, 0.5)',
-            errorUnderline: 'red',
+            errorUnderline: 'red', warningUnderline: '#d19a66',
             tokenColors: {
                 'keyword': '#c678dd', 'string': '#98c379', 'comment': '#5c6370',
                 'function': '#61afef', 'number': '#d19a66', 'boolean': '#d19a66',
@@ -68,7 +68,15 @@ class CanvasEditor {
         this.init();
     }
 
-    init() { this.ctx.font = this.font; this.h_width = this.ctx.measureText('W').width; this.z_width = this.h_width * 2; this.visibleLines = Math.floor((this.canvas.height - this.padding * 2) / this.lineHeight); this.updateLines(); this.bindEvents(); requestAnimationFrame(this.renderLoop.bind(this)); }
+    init() {
+        this.ctx.font = this.font;
+        this.ctx.textBaseline = 'middle';
+        this.h_width = this.ctx.measureText('W').width;
+        this.z_width = this.h_width * 2;
+        this.updateLines();
+        this.bindEvents();
+        requestAnimationFrame(this.renderLoop.bind(this));
+    }
     
     registerLanguageProvider(languageId, provider) {
         this.languageProvider = provider;
@@ -76,6 +84,7 @@ class CanvasEditor {
             this.tokens = data.tokens || [];
             this.diagnostics = data.diagnostics || [];
             this.langConfig = { ...this.langConfig, ...data.config };
+            this.updateProblemsPanel();
         });
         this.updateText(this.text);
     }
@@ -89,7 +98,46 @@ class CanvasEditor {
     getCharWidth(char) { if (this.charWidthCache.has(char)) { return this.charWidthCache.get(char); } const isHalfWidth = (char.charCodeAt(0) >= 0x0020 && char.charCodeAt(0) <= 0x007e) || (char.charCodeAt(0) >= 0xff61 && char.charCodeAt(0) <= 0xff9f); const width = isHalfWidth ? this.h_width : this.z_width; this.charWidthCache.set(char, width); return width; }
     measureText(text) { let totalWidth = 0; for (const char of text) { totalWidth += this.getCharWidth(char); } return totalWidth; }
     
-    bindEvents() { this.canvas.addEventListener('mousedown', this.onMouseDown.bind(this)); this.canvas.addEventListener('mousemove', this.onMouseMove.bind(this)); this.canvas.addEventListener('mouseleave', () => { clearTimeout(this.hoverTimeout); this.hidePopup(); this.lastHoverIndex = -1; }); window.addEventListener('mouseup', this.onMouseUp.bind(this)); this.canvas.addEventListener('wheel', this.onWheel.bind(this)); document.addEventListener('click', (e) => { if (e.target !== this.canvas) this.blur(); }); this.textarea.addEventListener('input', this.onInput.bind(this)); this.textarea.addEventListener('keydown', this.onKeydown.bind(this)); this.textarea.addEventListener('compositionstart', () => { this.isComposing = true; }); this.textarea.addEventListener('compositionupdate', (e) => { this.compositionText = e.data; }); this.textarea.addEventListener('compositionend', (e) => { this.isComposing = false; this.compositionText = ''; this.onInput({target: {value: e.data}}); }); this.textarea.addEventListener('copy', this.onCopy.bind(this)); this.textarea.addEventListener('paste', this.onPaste.bind(this)); this.textarea.addEventListener('cut', this.onCut.bind(this)); }
+    bindEvents() {
+        this.canvas.addEventListener('mousedown', this.onMouseDown.bind(this));
+        this.canvas.addEventListener('mousemove', this.onMouseMove.bind(this));
+        this.canvas.addEventListener('mouseleave', () => { clearTimeout(this.hoverTimeout); this.hidePopup(); this.lastHoverIndex = -1; });
+        window.addEventListener('mouseup', this.onMouseUp.bind(this));
+        this.canvas.addEventListener('wheel', this.onWheel.bind(this));
+        document.addEventListener('click', (e) => { if (e.target !== this.canvas) this.blur(); });
+        this.textarea.addEventListener('input', this.onInput.bind(this));
+        this.textarea.addEventListener('keydown', this.onKeydown.bind(this));
+        this.textarea.addEventListener('compositionstart', () => { this.isComposing = true; });
+        this.textarea.addEventListener('compositionupdate', (e) => { this.compositionText = e.data; });
+        this.textarea.addEventListener('compositionend', (e) => { this.isComposing = false; this.compositionText = ''; this.onInput({target: {value: e.data}}); });
+        this.textarea.addEventListener('copy', this.onCopy.bind(this));
+        this.textarea.addEventListener('paste', this.onPaste.bind(this));
+        this.textarea.addEventListener('cut', this.onCut.bind(this));
+        const observer = new ResizeObserver(() => this.resizeEditor());
+        observer.observe(this.canvas.parentElement);
+    }
+
+    resizeEditor() {
+        const container = this.canvas.parentElement;
+        if (!container) return;
+        const dpr = window.devicePixelRatio || 1;
+        const rect = container.getBoundingClientRect();
+        const newWidth = Math.round(rect.width * dpr);
+        const newHeight = Math.round(rect.height * dpr);
+        if (this.canvas.width === newWidth && this.canvas.height === newHeight) {
+            return;
+        }
+        this.canvas.style.width = `${rect.width}px`;
+        this.canvas.style.height = `${rect.height}px`;
+        this.canvas.width = newWidth;
+        this.canvas.height = newHeight;
+        this.ctx.scale(dpr, dpr);
+        this.ctx.font = this.font;
+        this.ctx.textBaseline = 'middle';
+        this.visibleLines = Math.floor((rect.height - this.padding * 2) / this.lineHeight);
+        this.scrollToCursor();
+    }
+
     onCopy(e) { e.preventDefault(); if (!this.hasSelection()) return; const { start, end } = this.getSelectionRange(); const selectedText = this.text.substring(start, end); e.clipboardData.setData('text/plain', selectedText); }
     onPaste(e) { e.preventDefault(); const pasteText = e.clipboardData.getData('text/plain'); if (pasteText) { this.insertText(pasteText); } }
     onCut(e) { e.preventDefault(); if (!this.hasSelection()) return; this.onCopy(e); this.deleteSelection(); }
@@ -110,14 +158,19 @@ class CanvasEditor {
                 this.lastHoverIndex = currentHoverIndex;
                 this.hidePopup();
                 clearTimeout(this.hoverTimeout);
-                this.hoverTimeout = setTimeout(() => this.handleHover(e), 100);
+                this.hoverTimeout = setTimeout(() => this.handleHover(e, currentHoverIndex), 100);
             }
         }
     }
 
-    async handleHover(e) {
+    async handleHover(e, pos) {
+        const diagnostic = this.diagnostics.find(d => pos >= d.startIndex && pos < d.endIndex);
+        if (diagnostic) {
+            this.showPopup(diagnostic.message, e.clientX, e.clientY);
+            return;
+        }
+
         if (!this.languageProvider) return;
-        const pos = this.getCursorIndexFromCoords(e.offsetX, e.offsetY);
         this.lastHoverIndex = pos;
         const hoverInfo = await this.languageProvider.getHoverInfo(pos);
         if (hoverInfo && hoverInfo.content) {
@@ -149,11 +202,13 @@ class CanvasEditor {
     }
     
     render() {
-        this.ctx.fillStyle = this.colors.background; this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height); this.ctx.save(); this.ctx.translate(-this.scrollX, -this.scrollY);
+        const dpr = window.devicePixelRatio || 1;
+        const rect = this.canvas.parentElement.getBoundingClientRect();
+        this.ctx.fillStyle = this.colors.background; this.ctx.fillRect(0, 0, rect.width, rect.height); this.ctx.save(); this.ctx.translate(-this.scrollX, -this.scrollY);
         const selection = this.getSelectionRange();
         const cursorPosition = this.getPosFromIndex(this.cursor);
         
-        this.lines.forEach((line, i) => { const y = this.padding + i * this.lineHeight; if (y + this.lineHeight < this.scrollY || y > this.scrollY + this.canvas.height) return;
+        this.lines.forEach((line, i) => { const y = this.padding + i * this.lineHeight; if (y + this.lineHeight < this.scrollY || y > this.scrollY + rect.height) return;
             const drawLineContent = (text, startX, textY, lineStartIndexOffset = 0) => {
                 let currentX = startX;
                 let isLeading = true;
@@ -208,7 +263,7 @@ class CanvasEditor {
                 for (const char of this.compositionText) { this.ctx.fillText(char, imeCurrentX, textY); imeCurrentX += this.getCharWidth(char); }
                 const compositionWidth = this.measureText(this.compositionText);
                 this.ctx.strokeStyle = this.colors.imeUnderline;
-                this.ctx.lineWidth = 1;
+                this.ctx.lineWidth = 1 / dpr;
                 this.ctx.beginPath();
                 this.ctx.moveTo(imeStartX, y + this.lineHeight - 2);
                 this.ctx.lineTo(imeStartX + compositionWidth, y + this.lineHeight - 2);
@@ -240,8 +295,8 @@ class CanvasEditor {
                     const textDiag = line.substring(start - lineStartIndex, end - lineStartIndex);
                     const x = this.padding + this.measureText(textBefore);
                     const width = this.measureText(textDiag);
-                    this.ctx.strokeStyle = this.colors.errorUnderline;
-                    this.ctx.lineWidth = 1;
+                    this.ctx.strokeStyle = diag.severity === 'error' ? this.colors.errorUnderline : this.colors.warningUnderline;
+                    this.ctx.lineWidth = 1 / dpr;
                     this.ctx.beginPath();
                     this.ctx.moveTo(x, y + this.lineHeight - 2);
                     this.ctx.lineTo(x + width, y + this.lineHeight - 2);
@@ -249,7 +304,7 @@ class CanvasEditor {
                 }
             });
         });
-        if (this.isFocused && !this.isComposing) { const cursorPos = this.getCursorCoords(this.cursor); if (this.isOverwriteMode) { const char = this.text[this.cursor] || ' '; const charWidth = this.getCharWidth(char); this.ctx.fillStyle = this.colors.overwriteCursor; this.ctx.fillRect(cursorPos.x, cursorPos.y, charWidth, this.lineHeight); } else if (this.cursorBlinkState && !this.hasSelection()) { this.ctx.fillStyle = this.colors.cursor; this.ctx.fillRect(cursorPos.x, cursorPos.y, 2, this.lineHeight); } }
+        if (this.isFocused && !this.isComposing) { const cursorPos = this.getCursorCoords(this.cursor); if (this.isOverwriteMode) { const char = this.text[this.cursor] || ' '; const charWidth = this.getCharWidth(char); this.ctx.fillStyle = this.colors.overwriteCursor; this.ctx.fillRect(cursorPos.x, cursorPos.y, charWidth, this.lineHeight); } else if (this.cursorBlinkState && !this.hasSelection()) { this.ctx.fillStyle = this.colors.cursor; this.ctx.fillRect(cursorPos.x, cursorPos.y, 2 / dpr, this.lineHeight); } }
         this.ctx.restore();
     }
      
@@ -261,7 +316,25 @@ class CanvasEditor {
     moveCursorLine(direction) { const { row, col } = this.getPosFromIndex(this.cursor); if (this.preferredCursorX < 0) { this.preferredCursorX = this.measureText(this.lines[row].substring(0, col)); } const newRow = Math.max(0, Math.min(this.lines.length - 1, row + direction)); if (newRow === row) { this.setCursor(direction < 0 ? 0 : this.text.length); return; } const targetLine = this.lines[newRow]; let minDelta = Infinity; let newCol = 0; for (let i = 0; i <= targetLine.length; i++) { const w = this.measureText(targetLine.substring(0, i)); const delta = Math.abs(this.preferredCursorX - w); if (delta < minDelta) { minDelta = delta; newCol = i; } else { break; } } this.setCursor(this.getIndexFromPos(newRow, newCol), false); }
     handleHomeEndKeys(e) { const { row, col } = this.getPosFromIndex(this.cursor); const line = this.lines[row]; let newCol = col; if (e.key === 'Home') { const indentEndCol = line.match(/^\s*/)[0].length; if (col !== indentEndCol && indentEndCol !== line.length) { newCol = indentEndCol; } else { newCol = 0; } } else { newCol = line.length; } this.setCursor(this.getIndexFromPos(row, newCol)); if (!e.shiftKey) { this.selectionStart = this.selectionEnd = this.cursor; } else { this.selectionEnd = this.cursor; } }
     handlePageKeys(e) { const direction = e.key === 'PageUp' ? -1 : 1; const { row } = this.getPosFromIndex(this.cursor); if (this.preferredCursorX < 0) { this.preferredCursorX = this.measureText(this.lines[row].substring(0, this.getPosFromIndex(this.cursor).col)); } const newRow = Math.max(0, Math.min(this.lines.length - 1, row + direction * this.visibleLines)); const targetLine = this.lines[newRow]; let minDelta = Infinity; let newCol = 0; for (let i = 0; i <= targetLine.length; i++) { const w = this.measureText(targetLine.substring(0, i)); const delta = Math.abs(this.preferredCursorX - w); if (delta < minDelta) { minDelta = delta; newCol = i; } else { break; } } this.setCursor(this.getIndexFromPos(newRow, newCol), false); if (!e.shiftKey) { this.selectionStart = this.selectionEnd = this.cursor; } else { this.selectionEnd = this.cursor; } }
-    scrollToCursor() { const { x: cursorX, y: cursorY } = this.getCursorCoords(this.cursor); const visibleTop = this.scrollY; const visibleBottom = this.scrollY + this.canvas.height; if (cursorY < visibleTop) { this.scrollY = cursorY; } else if (cursorY + this.lineHeight > visibleBottom) { this.scrollY = cursorY + this.lineHeight - this.canvas.height; } const visibleLeft = this.scrollX + this.padding; const visibleRight = this.scrollX + this.canvas.width - this.padding; if (cursorX < visibleLeft) { this.scrollX = cursorX - this.padding; } else if (cursorX > visibleRight) { this.scrollX = cursorX - this.canvas.width + this.padding; } this.scrollX = Math.max(0, this.scrollX); }
+    scrollToCursor() {
+        const rect = this.canvas.parentElement.getBoundingClientRect();
+        const { x: cursorX, y: cursorY } = this.getCursorCoords(this.cursor);
+        const visibleTop = this.scrollY;
+        const visibleBottom = this.scrollY + rect.height;
+        if (cursorY < visibleTop) {
+            this.scrollY = cursorY;
+        } else if (cursorY + this.lineHeight > visibleBottom) {
+            this.scrollY = cursorY + this.lineHeight - rect.height;
+        }
+        const visibleLeft = this.scrollX + this.padding;
+        const visibleRight = this.scrollX + rect.width - this.padding;
+        if (cursorX < visibleLeft) {
+            this.scrollX = cursorX - this.padding;
+        } else if (cursorX > visibleRight) {
+            this.scrollX = cursorX - rect.width + this.padding;
+        }
+        this.scrollX = Math.max(0, this.scrollX);
+    }
     resetCursorBlink() { this.cursorBlinkState = true; this.lastBlinkTime = performance.now(); }
     renderLoop(timestamp) { this.updateCursorBlink(timestamp); this.render(); this.updateTextareaPosition(); requestAnimationFrame(this.renderLoop.bind(this)); }
     updateCursorBlink(timestamp) { if (!this.isFocused || this.isOverwriteMode) return; if (timestamp - this.lastBlinkTime > this.blinkInterval) { this.cursorBlinkState = !this.cursorBlinkState; this.lastBlinkTime = timestamp; }}
@@ -277,4 +350,28 @@ class CanvasEditor {
     applyState(state) { if (!state) return; this.text = state.text; this.cursor = state.cursor; this.selectionStart = state.selectionStart; this.selectionEnd = state.selectionEnd; this.updateLines(); this.scrollToCursor(); this.resetCursorBlink(); this.updateText(this.text); }
     undo() { if (this.undoStack.length === 0) return; const currentState = { text: this.text, cursor: this.cursor, selectionStart: this.selectionStart, selectionEnd: this.selectionEnd }; this.redoStack.push(currentState); const prevState = this.undoStack.pop(); this.applyState(prevState); }
     redo() { if (this.redoStack.length === 0) return; const currentState = { text: this.text, cursor: this.cursor, selectionStart: this.selectionStart, selectionEnd: this.selectionEnd }; this.undoStack.push(currentState); const nextState = this.redoStack.pop(); this.applyState(nextState); }
+
+    updateProblemsPanel() {
+        if (!this.problemsPanel) return;
+        this.problemsPanel.innerHTML = '';
+        this.diagnostics.forEach(diag => {
+            const { row, col } = this.getPosFromIndex(diag.startIndex);
+            const li = document.createElement('li');
+            li.className = `severity-${diag.severity}`;
+            li.textContent = diag.message;
+            
+            const locationSpan = document.createElement('span');
+            locationSpan.className = 'problem-location';
+            locationSpan.textContent = `[${row + 1}, ${col + 1}]`;
+            li.appendChild(locationSpan);
+
+            li.addEventListener('click', () => {
+                this.setCursor(diag.startIndex);
+                this.selectionStart = this.selectionEnd = this.cursor;
+                this.canvas.focus();
+                this.focus();
+            });
+            this.problemsPanel.appendChild(li);
+        });
+    }
 }
