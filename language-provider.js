@@ -41,4 +41,5 @@ class BaseLanguageProvider {
     getIndentation(index) { return this._postMessageAndWaitForResult('getIndentation', { index }); }
     toggleComment(selectionStart, selectionEnd) { return this._postMessageAndWaitForResult('toggleComment', { selectionStart, selectionEnd }); }
     adjustIndentation(selectionStart, selectionEnd, isOutdent) { return this._postMessageAndWaitForResult('adjustIndentation', { selectionStart, selectionEnd, isOutdent }); }
+    getBracketMatch(index) { return this._postMessageAndWaitForResult('getBracketMatch', { index }); }
 }

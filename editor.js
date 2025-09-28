@@ -73,6 +73,7 @@ class CanvasEditor {
         this.diagnostics = [];
         this.langConfig = { highlightWhitespace: false, highlightIndent: false };
         this.highlightedOccurrences = [];
+        this.bracketHighlights = [];
 
         this.hoverTimeout = null;
         this.lastHoverIndex = -1;
@@ -332,7 +333,8 @@ class CanvasEditor {
                     const isTrailing = (charIndex - this.getIndexFromPos(i, 0)) >= lastNonSpaceIndex;
 
                     const isHighlightedOccurrence = this.highlightedOccurrences.some(occ => charIndex >= occ.startIndex && charIndex < occ.endIndex);
-                    if (isHighlightedOccurrence) {
+                    const isBracketHighlight = this.bracketHighlights.some(br => charIndex >= br.startIndex && charIndex < br.endIndex);
+                    if (isHighlightedOccurrence || isBracketHighlight) {
                         this.ctx.fillStyle = this.colors.occurrenceHighlight;
                         this.ctx.fillRect(currentX, y, charWidth, this.lineHeight);
                     }
@@ -426,13 +428,22 @@ class CanvasEditor {
     insertText(newText) { this.recordHistory(); if (this.hasSelection()) { this.deleteSelection(false); } if (this.isOverwriteMode && this.cursor < this.text.length && newText !== '\n') { const end = this.cursor + newText.length; this.text = this.text.slice(0, this.cursor) + newText + this.text.slice(end); this.setCursor(this.cursor + newText.length); } else { const prevCursor = this.cursor; this.text = this.text.slice(0, prevCursor) + newText + this.text.slice(prevCursor); this.setCursor(prevCursor + newText.length); } this.selectionStart = this.selectionEnd = this.cursor; this.updateLines(); this.updateText(this.text); this.updateOccurrencesHighlight(); }
     deleteSelection(history = true) { if (history) { this.recordHistory(); } if(!this.hasSelection()) return; const { start } = this.getSelectionRange(); this.text = this.text.slice(0, start) + this.text.slice(this.getSelectionRange().end); this.setCursor(start); this.selectionStart = this.selectionEnd = this.cursor; this.updateLines(); this.updateText(this.text); this.updateOccurrencesHighlight(); }
     
-    setCursor(index, resetX = true) { this.cursor = Math.max(0, Math.min(this.text.length, index)); if (resetX) { this.preferredCursorX = -1; } this.scrollToCursor(); this.resetCursorBlink(); this.updateOccurrencesHighlight(); }
+    setCursor(index, resetX = true) {
+        this.cursor = Math.max(0, Math.min(this.text.length, index));
+        if (resetX) { this.preferredCursorX = -1; }
+        this.scrollToCursor();
+        this.resetCursorBlink();
+        this.updateOccurrencesHighlight();
+        this.updateBracketMatching();
+    }
+
     handleArrowKeys(e) { if (this.hasSelection() && !e.shiftKey) { const selection = this.getSelectionRange(); switch (e.key) { case 'ArrowLeft': case 'ArrowUp': this.setCursor(selection.start); break; case 'ArrowRight': case 'ArrowDown': this.setCursor(selection.end); break; } this.selectionStart = this.selectionEnd = this.cursor; return; } switch (e.key) { case 'ArrowLeft': if (this.cursor > 0) this.setCursor(this.cursor - 1); break; case 'ArrowRight': if (this.cursor < this.text.length) this.setCursor(this.cursor + 1); break; case 'ArrowUp': this.moveCursorLine(-1); break; case 'ArrowDown': this.moveCursorLine(1); break; } if (!e.shiftKey) { this.selectionStart = this.selectionEnd = this.cursor; } else { this.selectionEnd = this.cursor; this.updateOccurrencesHighlight(); } }
     moveCursorLine(direction) { const { row, col } = this.getPosFromIndex(this.cursor); if (this.preferredCursorX < 0) { this.preferredCursorX = this.measureText(this.lines[row].substring(0, col)); } const newRow = Math.max(0, Math.min(this.lines.length - 1, row + direction)); if (newRow === row) { this.setCursor(direction < 0 ? 0 : this.text.length); return; } const targetLine = this.lines[newRow]; let minDelta = Infinity; let newCol = 0; for (let i = 0; i <= targetLine.length; i++) { const w = this.measureText(targetLine.substring(0, i)); const delta = Math.abs(this.preferredCursorX - w); if (delta < minDelta) { minDelta = delta; newCol = i; } else { break; } } this.setCursor(this.getIndexFromPos(newRow, newCol), false); }
     handleHomeEndKeys(e) { const { row, col } = this.getPosFromIndex(this.cursor); const line = this.lines[row]; let newCol = col; if (e.key === 'Home') { const indentEndCol = line.match(/^\s*/)[0].length; if (col !== indentEndCol && indentEndCol !== line.length) { newCol = indentEndCol; } else { newCol = 0; } } else { newCol = line.length; } this.setCursor(this.getIndexFromPos(row, newCol)); if (!e.shiftKey) { this.selectionStart = this.selectionEnd = this.cursor; } else { this.selectionEnd = this.cursor; this.updateOccurrencesHighlight(); } }
     handlePageKeys(e) { const direction = e.key === 'PageUp' ? -1 : 1; const { row } = this.getPosFromIndex(this.cursor); if (this.preferredCursorX < 0) { this.preferredCursorX = this.measureText(this.lines[row].substring(0, this.getPosFromIndex(this.cursor).col)); } const newRow = Math.max(0, Math.min(this.lines.length - 1, row + direction * this.visibleLines)); const targetLine = this.lines[newRow]; let minDelta = Infinity; let newCol = 0; for (let i = 0; i <= targetLine.length; i++) { const w = this.measureText(targetLine.substring(0, i)); const delta = Math.abs(this.preferredCursorX - w); if (delta < minDelta) { minDelta = delta; newCol = i; } else { break; } } this.setCursor(this.getIndexFromPos(newRow, newCol), false); if (!e.shiftKey) { this.selectionStart = this.selectionEnd = this.cursor; } else { this.selectionEnd = this.cursor; this.updateOccurrencesHighlight(); } }
     
     async updateOccurrencesHighlight() { if (!this.languageProvider || this.hasSelection()) { if (this.highlightedOccurrences.length > 0) this.highlightedOccurrences = []; this.hideCompletion(); return; } const occurrences = await this.languageProvider.getOccurrences(this.cursor); this.highlightedOccurrences = occurrences || []; }
+    async updateBracketMatching() { if (!this.languageProvider) { this.bracketHighlights = []; return; } const matches = await this.languageProvider.getBracketMatch(this.cursor); this.bracketHighlights = matches || []; }
     scrollToCursor() { const rect = this.canvas.parentElement.getBoundingClientRect(); const { x: cursorX, y: cursorY } = this.getCursorCoords(this.cursor); const visibleTop = this.scrollY; const visibleBottom = this.scrollY + rect.height; if (cursorY < visibleTop) this.scrollY = cursorY; else if (cursorY + this.lineHeight > visibleBottom) this.scrollY = cursorY + this.lineHeight - rect.height; const visibleLeft = this.scrollX + this.gutterWidth; const visibleRight = this.scrollX + rect.width - this.padding; if (cursorX < visibleLeft) this.scrollX = cursorX - this.gutterWidth - this.padding; else if (cursorX > visibleRight) this.scrollX = cursorX - rect.width + this.padding; this.scrollX = Math.max(0, this.scrollX); }
     resetCursorBlink() { this.cursorBlinkState = true; this.lastBlinkTime = performance.now(); }
     renderLoop(timestamp) { this.updateCursorBlink(timestamp); this.render(); this.updateTextareaPosition(); requestAnimationFrame(this.renderLoop.bind(this)); }

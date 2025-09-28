@@ -157,6 +157,115 @@ class JavaScriptAnalyzer {
 
     toggleCommentAt(selectionStart, selectionEnd) { const lineStartIndex = this.text.lastIndexOf('\n', selectionStart - 1) + 1; let lineEndIndex = this.text.indexOf('\n', selectionEnd); if (lineEndIndex === -1) lineEndIndex = this.text.length; const selectedLinesText = this.text.substring(lineStartIndex, lineEndIndex); const lines = selectedLinesText.split('\n'); const isAllCommented = lines.filter(line => line.trim() !== '').every(line => line.trim().startsWith('//')); let newLines, selectionDelta = 0; if (isAllCommented) { newLines = lines.map(line => { const match = line.match(/^(\s*)\/\/\s?(.*)/); if (match) { selectionDelta -= 3; return match[1] + match[2]; } return line; }); } else { const minIndent = Math.min(...lines.filter(l => l.trim()).map(l => l.match(/^\s*/)[0].length)); const indent = ' '.repeat(minIndent); newLines = lines.map(line => { if (line.trim() === '') return line; selectionDelta += 2; return indent + '//' + line.substring(minIndent); }); } const newText = this.text.substring(0, lineStartIndex) + newLines.join('\n') + this.text.substring(lineEndIndex); return { newText, newSelectionStart: selectionStart, newSelectionEnd: selectionEnd + selectionDelta }; }
     
+    findMatchingBracket(index) {
+        const bracketPairs = { '(': ')', '[': ']', '{': '}', ')': '(', ']': '[', '}': '{' };
+        const char = this.text[index];
+        if (!bracketPairs[char]) return null;
+    
+        const nonCodeTokens = this.tokens.filter(t => t.type === 'string' || t.type === 'comment');
+        const isInNonCode = (idx) => nonCodeTokens.some(t => idx >= t.startIndex && idx < t.endIndex);
+    
+        if (isInNonCode(index)) return null;
+    
+        const isOpening = ['(', '[', '{'].includes(char);
+        const partner = bracketPairs[char];
+        const direction = isOpening ? 1 : -1;
+        let stack = 1;
+        let currentIndex = index + direction;
+    
+        while (currentIndex >= 0 && currentIndex < this.text.length) {
+            if (isInNonCode(currentIndex)) {
+                currentIndex += direction;
+                continue;
+            }
+    
+            const currentChar = this.text[currentIndex];
+            if (currentChar === char) {
+                stack++;
+            } else if (currentChar === partner) {
+                stack--;
+            }
+    
+            if (stack === 0) {
+                return currentIndex;
+            }
+            currentIndex += direction;
+        }
+        return null;
+    }
+
+    findEnclosingBrackets(index) {
+        const openBrackets = new Set(['(', '[', '{']);
+        const bracketPairs = { '(': ')', '[': ']', '{': '}' }; // Opening -> closing
+        const nonCodeTokens = this.tokens.filter(t => t.type === 'string' || t.type === 'comment');
+        const isInNonCode = (idx) => nonCodeTokens.some(t => idx >= t.startIndex && idx < t.endIndex);
+
+        const stack = [];
+        // Scan up to the cursor to find the last unmatched opening bracket
+        for (let i = 0; i < index; i++) {
+            if (isInNonCode(i)) continue;
+
+            const char = this.text[i];
+            if (openBrackets.has(char)) { // It's an opening bracket
+                stack.push({ char: char, index: i });
+            } else if (Object.values(bracketPairs).includes(char)) { // It's a closing bracket
+                if (stack.length > 0 && bracketPairs[stack[stack.length - 1].char] === char) {
+                    stack.pop();
+                }
+            }
+        }
+
+        // If the stack is not empty, the top is our candidate
+        if (stack.length > 0) {
+            const openingBracket = stack[stack.length - 1];
+            const matchingBracketIndex = this.findMatchingBracket(openingBracket.index);
+
+            // The match must be valid and must be *after* the cursor
+            if (matchingBracketIndex !== null && matchingBracketIndex >= index) {
+                return [
+                    { startIndex: openingBracket.index, endIndex: openingBracket.index + 1 },
+                    { startIndex: matchingBracketIndex, endIndex: matchingBracketIndex + 1 }
+                ];
+            }
+        }
+
+        return null;
+    }
+    
+    getBracketMatchAt(index) {
+        let adjacentMatch = null;
+        // Check for a bracket immediately to the left of the cursor
+        if (index > 0) {
+            const checkIndex = index - 1;
+            const matchingBracketIndex = this.findMatchingBracket(checkIndex);
+            if (matchingBracketIndex !== null) {
+                adjacentMatch = [
+                    { startIndex: checkIndex, endIndex: checkIndex + 1 },
+                    { startIndex: matchingBracketIndex, endIndex: matchingBracketIndex + 1 }
+                ];
+            }
+        }
+        
+        // If no match on the left, check for a bracket immediately at/to the right of the cursor
+        if (!adjacentMatch && index < this.text.length) {
+            const checkIndex = index;
+            const matchingBracketIndex = this.findMatchingBracket(checkIndex);
+            if (matchingBracketIndex !== null) {
+                adjacentMatch = [
+                    { startIndex: checkIndex, endIndex: checkIndex + 1 },
+                    { startIndex: matchingBracketIndex, endIndex: matchingBracketIndex + 1 }
+                ];
+            }
+        }
+
+        if (adjacentMatch) {
+            return adjacentMatch;
+        }
+
+        // If no adjacent bracket, find the enclosing pair
+        return this.findEnclosingBrackets(index);
+    }
+    
     isAtEnd(offset = this.offset) { return offset >= this.text.length; }
     peek(offset = this.offset) { return this.isAtEnd(offset) ? '\0' : this.text.charAt(offset); }
     peekNext(offset = this.offset) { return this.isAtEnd(offset + 1) ? '\0' : this.text.charAt(offset + 1); }
@@ -184,5 +293,6 @@ self.onmessage = (event) => {
         case 'getIndentation': if (analyzer) self.postMessage({ type, payload: analyzer.getIndentationAt(payload.index), requestId }); break;
         case 'toggleComment': if (analyzer) self.postMessage({ type, payload: analyzer.toggleCommentAt(payload.selectionStart, payload.selectionEnd), requestId }); break;
         case 'adjustIndentation': if (analyzer) self.postMessage({ type, payload: analyzer.adjustIndentationAt(payload.selectionStart, payload.selectionEnd, payload.isOutdent), requestId }); break;
+        case 'getBracketMatch': if (analyzer) self.postMessage({ type, payload: analyzer.getBracketMatchAt(payload.index), requestId }); break;
     }
 };
