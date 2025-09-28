@@ -73,7 +73,7 @@ class CanvasEditor {
     init() {
         this.ctx.font = this.font;
         this.ctx.textBaseline = 'middle';
-        this.h_width = this.ctx.measureText('W').width;
+        this.h_width = 13;
         this.z_width = this.h_width * 2;
         this.updateLines();
         this.bindEvents();
@@ -106,7 +106,17 @@ class CanvasEditor {
         this.canvas.addEventListener('mouseleave', () => { clearTimeout(this.hoverTimeout); this.hidePopup(); this.lastHoverIndex = -1; });
         window.addEventListener('mouseup', this.onMouseUp.bind(this));
         this.canvas.addEventListener('wheel', this.onWheel.bind(this));
-        document.addEventListener('click', (e) => { if (e.target !== this.canvas) this.blur(); });
+        
+        document.addEventListener('click', (e) => {
+            const editorContainer = this.canvas.parentElement;
+            const problemsContainer = this.problemsPanel ? this.problemsPanel.parentElement : null;
+            const isClickInside = (editorContainer && editorContainer.contains(e.target)) ||
+                                  (problemsContainer && problemsContainer.contains(e.target));
+            if (!isClickInside) {
+                this.blur();
+            }
+        });
+
         this.textarea.addEventListener('input', this.onInput.bind(this));
         this.textarea.addEventListener('keydown', this.onKeydown.bind(this));
         this.textarea.addEventListener('compositionstart', () => { this.isComposing = true; });
@@ -388,8 +398,7 @@ class CanvasEditor {
 
             li.addEventListener('click', () => {
                 this.setCursor(diag.startIndex);
-                this.selectionStart = this.selectionEnd = this.cursor;
-                this.canvas.focus();
+                this.textarea.focus();
                 this.focus();
             });
             this.problemsPanel.appendChild(li);
