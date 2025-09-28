@@ -1,5 +1,7 @@
 // md-worker.js
 
+importScripts('js-analyzer.js');
+
 class MarkdownAnalyzer {
     constructor(text) {
         this.text = text;
@@ -16,71 +18,104 @@ class MarkdownAnalyzer {
         return { startIndex: start, endIndex: end, type };
     }
 
+    /**
+     * テキスト全体をトークン化します。
+     * 最初にコードブロックを特定し、その中身を言語に応じて処理します。
+     * 残りの部分をMarkdownとして解析します。
+     */
     tokenize() {
         this.tokens = [];
-        const lines = this.text.split('\n');
-        let offset = 0;
-        let inCodeBlock = false;
+        const codeBlockRegex = /^```(\w*)\n([\s\S]*?)\n^```/gm;
+        let match;
+        let lastIndex = 0;
+
+        while ((match = codeBlockRegex.exec(this.text)) !== null) {
+            const lang = match[1].toLowerCase();
+            const content = match[2];
+            const blockStartIndex = match.index;
+            const blockEndIndex = codeBlockRegex.lastIndex;
+
+            // このコードブロックより前のテキストをMarkdownとして解析
+            const textBefore = this.text.substring(lastIndex, blockStartIndex);
+            this.tokenizeMarkdownFragment(textBefore, lastIndex);
+
+            // コードブロック自体を処理
+            const openingFenceEnd = blockStartIndex + match[0].indexOf('\n') + 1;
+            this.tokens.push(this.createToken('code-block', blockStartIndex, openingFenceEnd - 1));
+            
+            // 閉じフェンスの開始位置を見つける
+            let closingFenceStart = match[0].lastIndexOf('\n```') + blockStartIndex;
+            if (closingFenceStart < openingFenceEnd) closingFenceStart = blockEndIndex - 3;
+            
+            this.tokens.push(this.createToken('code-block', closingFenceStart, blockEndIndex));
+
+            // JavaScriptコードブロックなら、JavaScriptとしてハイライト
+            if (lang === 'javascript' || lang === 'js') {
+                const jsAnalyzer = new JavaScriptAnalyzer(content);
+                jsAnalyzer.tokenize();
+                for (const token of jsAnalyzer.tokens) {
+                    this.tokens.push(this.createToken(
+                        token.type,
+                        openingFenceEnd + token.startIndex,
+                        openingFenceEnd + token.endIndex
+                    ));
+                }
+            } else {
+                // 他の言語は一括で文字列としてハイライト
+                this.tokens.push(this.createToken('string', openingFenceEnd, closingFenceStart));
+            }
+
+            lastIndex = blockEndIndex;
+        }
+
+        // 最後のコードブロック以降の残りのテキストを解析
+        const remainingText = this.text.substring(lastIndex);
+        this.tokenizeMarkdownFragment(remainingText, lastIndex);
+    }
+    
+    /**
+     * テキストの断片をMarkdownとして解析し、トークンを生成します。
+     * @param {string} fragment - 解析対象のテキスト断片
+     * @param {number} offset - 元のテキストにおける断片の開始インデックス
+     */
+    tokenizeMarkdownFragment(fragment, offset) {
+        const lines = fragment.split('\n');
+        let currentOffset = offset;
 
         for (const line of lines) {
             const lineLength = line.length;
+            
+            // 見出し
+            let match = line.match(/^(#+) /);
+            if (match) {
+                this.tokens.push(this.createToken('heading', currentOffset, currentOffset + lineLength));
+            }
+             // リスト
+            match = line.match(/^(\s*)([-*+] |[0-9]+\.) /);
+            if (match) {
+                this.tokens.push(this.createToken('list', currentOffset + match.length, currentOffset + match.length - 1));
+            }
+            
+            // インライン要素
+            const inlinePatterns = [
+                { type: 'inline-code', regex: /`([^`]+?)`/g },
+                { type: 'bold', regex: /(\*\*|__)(.+?)\1/g },
+                { type: 'italic', regex: /(\*|_)(.+?)\1/g },
+                { type: 'link', regex: /\[(.+?)\]\((.+?)\)/g },
+            ];
 
-            if (inCodeBlock) {
-                if (line.trim().startsWith('```')) {
-                    this.tokens.push(this.createToken('code-block', offset, offset + lineLength));
-                    inCodeBlock = false;
-                } else {
-                    // コードブロックの中身は、便宜上 'string' タイプとしてハイライトする
-                    this.tokens.push(this.createToken('string', offset, offset + lineLength));
-                }
-            } else {
-                let consumed = false;
-                // コードブロック開始
-                let match = line.match(/^```(\w*)/);
-                if (match) {
-                    this.tokens.push(this.createToken('code-block', offset, offset + lineLength));
-                    inCodeBlock = true;
-                    consumed = true;
-                }
-                // 見出し
-                if (!consumed) {
-                    match = line.match(/^(#+) /);
-                    if (match) {
-                        this.tokens.push(this.createToken('heading', offset, offset + lineLength));
-                        consumed = true; // 行全体を消費
-                    }
-                }
-                // リスト
-                if (!consumed) {
-                    match = line.match(/^(\s*)([-*+] |[0-9]+\.) /);
-                    if (match) {
-                        this.tokens.push(this.createToken('list', offset + match[1].length, offset + match[0].length - 1));
-                    }
-                }
-                
-                // インライン要素（複数適用される可能性がある）
-                // より長くマッチするものを優先するために、正規表現を調整
-                const inlinePatterns = [
-                    { type: 'inline-code', regex: /`([^`]+?)`/g },
-                    { type: 'bold', regex: /(\*\*|__)(.+?)\1/g },
-                    { type: 'italic', regex: /(\*|_)(.+?)\1/g },
-                    { type: 'link', regex: /\[(.+?)\]\((.+?)\)/g },
-                ];
-
-                for (const pattern of inlinePatterns) {
-                    let inlineMatch;
-                    while((inlineMatch = pattern.regex.exec(line))) {
-                        const start = offset + inlineMatch.index;
-                        const end = start + inlineMatch[0].length;
-                        // 既にトークン化された範囲との重複を避ける（簡易的なチェック）
-                        const isOverlapping = this.tokens.some(t => t.startIndex < end && t.endIndex > start);
-                        if (!isOverlapping) {
-                           this.tokens.push(this.createToken(pattern.type, start, end));
-                        }
+            for (const pattern of inlinePatterns) {
+                let inlineMatch;
+                while((inlineMatch = pattern.regex.exec(line))) {
+                    const start = currentOffset + inlineMatch.index;
+                    const end = start + inlineMatch[0].length;
+                    const isOverlapping = this.tokens.some(t => t.startIndex < end && t.endIndex > start);
+                    if (!isOverlapping) {
+                       this.tokens.push(this.createToken(pattern.type, start, end));
                     }
                 }
             }
-            offset += lineLength + 1; // +1 for the newline character
+            currentOffset += lineLength + 1; // +1 for the newline
         }
     }
 
@@ -102,7 +137,6 @@ class MarkdownAnalyzer {
                 headingStack.push({ line: i, level: level });
             }
         }
-        // ファイルの最後まで残っている見出しを処理
         while(headingStack.length > 0) {
             const lastHeading = headingStack.pop();
             if (lines.length - 1 > lastHeading.line) {
@@ -125,13 +159,12 @@ self.onmessage = (event) => {
                 type: 'update',
                 payload: {
                     tokens: analyzer.tokens,
-                    diagnostics: [], // Markdownでは診断なし
+                    diagnostics: [],
                     foldingRanges: analyzer.foldingRanges,
                     config: { highlightWhitespace: false, highlightIndent: false }
                 }
             });
             break;
-        // Markdownでは以下の機能はサポートしないため、nullまたは空の配列を返す
         case 'getHoverInfo': 
         case 'getDefinitionLocation':
         case 'getBracketMatch':
@@ -141,7 +174,6 @@ self.onmessage = (event) => {
         case 'getCompletions':
             if (analyzer) self.postMessage({ type, payload: [], requestId });
             break;
-        // 以下の機能はデフォルトの動作にフォールバックさせるため、空の応答を返す
         case 'getIndentation':
         case 'toggleComment':
         case 'adjustIndentation':
