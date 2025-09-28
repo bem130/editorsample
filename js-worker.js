@@ -19,6 +19,7 @@ class JavaScriptAnalyzer {
         this.diagnostics = [];
         this.declarations = new Map();
         this.wordBoundaries = [];
+        this.foldingRanges = [];
         this.offset = 0;
     }
 
@@ -27,6 +28,7 @@ class JavaScriptAnalyzer {
         this.parse();
         this.findDiagnostics();
         this.computeWordBoundaries();
+        this.computeFoldingRanges();
     }
 
     tokenize() {
@@ -60,6 +62,32 @@ class JavaScriptAnalyzer {
         this.declarations.clear(); for (let i = 0; i < this.tokens.length; i++) { const token = this.tokens[i]; const tokenText = this.text.substring(token.startIndex, token.endIndex); if (token.type === 'keyword' && ['const', 'let', 'var', 'function', 'class'].includes(tokenText)) { const nextToken = this.findNextMeaningfulToken(i); if (nextToken && (nextToken.type === 'variable' || nextToken.type === 'function')) { const name = this.text.substring(nextToken.startIndex, nextToken.endIndex); if (!this.declarations.has(name)) this.declarations.set(name, { index: nextToken.startIndex, type: tokenText }); } } }
     }
     findDiagnostics() { this.diagnostics = []; const regex = /console\.log/g; let match; while((match = regex.exec(this.text))) { this.diagnostics.push({ startIndex: match.index, endIndex: match.index + 11, message: 'デバッグ用のconsole.logが残っています。', severity: 'warning' }); } }
+
+    getLineAndCol(index) { const lines = this.text.substring(0, index).split('\n'); const line = lines.length - 1; const col = lines[line].length; return { line, col }; }
+    
+    computeFoldingRanges() {
+        this.foldingRanges = [];
+        const stack = [];
+        const openBrackets = new Set(['{', '[']);
+        const closeBrackets = new Set(['}', ']']);
+    
+        for (const token of this.tokens) {
+            if (token.type === 'punctuation') {
+                const char = this.text.substring(token.startIndex, token.endIndex);
+                if (openBrackets.has(char)) {
+                    stack.push(token.startIndex);
+                } else if (closeBrackets.has(char) && stack.length > 0) {
+                    const startIndex = stack.pop();
+                    const { line: startLine } = this.getLineAndCol(startIndex);
+                    const { line: endLine } = this.getLineAndCol(token.startIndex);
+    
+                    if (startLine < endLine) {
+                        this.foldingRanges.push({ startLine, endLine, placeholder: '...' });
+                    }
+                }
+            }
+        }
+    }
 
     getCharType(char) { if (/\s/.test(char)) return 'space'; if (/[\w$]/.test(char)) return 'word'; return 'symbol'; }
     
@@ -284,7 +312,19 @@ let analyzer;
 self.onmessage = (event) => {
     const { type, payload, requestId } = event.data;
     switch (type) {
-        case 'updateText': analyzer = new JavaScriptAnalyzer(payload); analyzer.analyze(); self.postMessage({ type: 'update', payload: { tokens: analyzer.tokens, diagnostics: analyzer.diagnostics, config: { highlightWhitespace: true, highlightIndent: true } } }); break;
+        case 'updateText':
+            analyzer = new JavaScriptAnalyzer(payload);
+            analyzer.analyze();
+            self.postMessage({
+                type: 'update',
+                payload: {
+                    tokens: analyzer.tokens,
+                    diagnostics: analyzer.diagnostics,
+                    foldingRanges: analyzer.foldingRanges,
+                    config: { highlightWhitespace: true, highlightIndent: true }
+                }
+            });
+            break;
         case 'getHoverInfo': if (analyzer) self.postMessage({ type, payload: analyzer.getHoverInfoAt(payload.index), requestId }); break;
         case 'getDefinitionLocation': if (analyzer) self.postMessage({ type, payload: analyzer.getDefinitionLocationAt(payload.index), requestId }); break;
         case 'getOccurrences': if (analyzer) self.postMessage({ type, payload: analyzer.getOccurrencesAt(payload.index), requestId }); break;

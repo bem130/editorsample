@@ -33,6 +33,12 @@
  * @property {boolean} highlightWhitespace - 空白文字をハイライトするか
  * @property {boolean} highlightIndent - インデントをハイライトするか
  */
+/**
+ * @typedef {object} FoldingRange - 折り畳み範囲の情報
+ * @property {number} startLine - 開始行番号 (0-indexed)
+ * @property {number} endLine - 終了行番号 (0-indexed)
+ * @property {string} placeholder - 折り畳み時に表示されるテキスト
+ */
 
 class CanvasEditor {
     constructor(canvas, textarea, popup, problemsPanel, completionList) {
@@ -75,6 +81,10 @@ class CanvasEditor {
         this.highlightedOccurrences = [];
         this.bracketHighlights = [];
 
+        this.foldingRanges = [];
+        this.foldedLines = new Set();
+        this.lineYPositions = [];
+
         this.hoverTimeout = null;
         this.lastHoverIndex = -1;
 
@@ -100,6 +110,7 @@ class CanvasEditor {
         this.languageProvider.onUpdate((data) => {
             this.tokens = data.tokens || [];
             this.diagnostics = data.diagnostics || [];
+            this.foldingRanges = data.foldingRanges || [];
             this.langConfig = { ...this.langConfig, ...data.config };
             this.updateProblemsPanel();
         });
@@ -170,7 +181,26 @@ class CanvasEditor {
     onCut(e) { e.preventDefault(); if (!this.hasSelection()) return; this.onCopy(e); this.deleteSelection(); }
     focus() { if(this.isFocused) return; this.isFocused = true; this.textarea.focus(); this.resetCursorBlink(); }
     blur() { this.isFocused = false; this.textarea.blur(); this.hidePopup(); this.hideCompletion(); }
-    onMouseDown(e) { e.preventDefault(); this.focus(); this.isDragging = true; const pos = this.getCursorIndexFromCoords(e.offsetX, e.offsetY); this.setCursor(pos); this.selectionStart = this.cursor; this.selectionEnd = this.cursor; this.hideCompletion(); }
+    onMouseDown(e) {
+        e.preventDefault();
+        this.focus();
+    
+        if (e.offsetX < this.gutterWidth) {
+            const clickedRow = this.getCursorIndexFromCoords(e.offsetX, e.offsetY, true).row;
+            const range = this.foldingRanges.find(r => r.startLine === clickedRow);
+            if (range) {
+                this.toggleFold(clickedRow);
+            }
+            return;
+        }
+    
+        this.isDragging = true;
+        const pos = this.getCursorIndexFromCoords(e.offsetX, e.offsetY);
+        this.setCursor(pos);
+        this.selectionStart = this.cursor;
+        this.selectionEnd = this.cursor;
+        this.hideCompletion();
+    }
     
     onMouseMove(e) {
         if (this.isDragging) {
@@ -294,7 +324,24 @@ class CanvasEditor {
         }
     }
     
+    recalculateLinePositions() {
+        this.lineYPositions = [];
+        let currentY = this.padding;
+        for (let i = 0; i < this.lines.length; i++) {
+            this.lineYPositions[i] = currentY;
+            const range = this.foldingRanges.find(r => r.startLine === i);
+            if (range && this.foldedLines.has(i)) {
+                for (let j = i + 1; j <= range.endLine; j++) {
+                    this.lineYPositions[j] = -1; // Mark as hidden
+                }
+                i = range.endLine;
+            }
+            currentY += this.lineHeight;
+        }
+    }
+    
     render() {
+        this.recalculateLinePositions();
         const dpr = window.devicePixelRatio || 1;
         const rect = this.canvas.parentElement.getBoundingClientRect();
         this.ctx.fillStyle = this.colors.background; this.ctx.fillRect(0, 0, rect.width, rect.height);
@@ -306,38 +353,61 @@ class CanvasEditor {
         const selection = this.getSelectionRange();
         const cursorPosition = this.getPosFromIndex(this.cursor);
         
-        this.lines.forEach((line, i) => { const y = this.padding + i * this.lineHeight; if (y + this.lineHeight < this.scrollY || y > this.scrollY + rect.height) return;
+        for (let i = 0; i < this.lines.length; i++) {
+            const y = this.lineYPositions[i];
+            if (y === -1 || y + this.lineHeight < this.scrollY || y > this.scrollY + rect.height) {
+                continue;
+            }
+    
+            const line = this.lines[i];
             const textY = y + this.lineHeight / 2;
-            const dpr = window.devicePixelRatio || 1;
-
+    
             if (this.isFocused && !this.hasSelection() && cursorPosition.row === i) {
-                this.ctx.strokeStyle = this.colors.cursorLineBorder;
-                this.ctx.lineWidth = 1;
+                this.ctx.strokeStyle = this.colors.cursorLineBorder; this.ctx.lineWidth = 1;
                 this.ctx.beginPath(); this.ctx.moveTo(this.gutterWidth, y); this.ctx.lineTo(this.scrollX + this.canvas.width / dpr, y); this.ctx.stroke();
                 this.ctx.beginPath(); this.ctx.moveTo(this.gutterWidth, y + this.lineHeight); this.ctx.lineTo(this.scrollX + this.canvas.width / dpr, y + this.lineHeight); this.ctx.stroke();
             }
-
+    
             this.ctx.textAlign = 'right';
+            const isFoldable = this.foldingRanges.some(r => r.startLine === i);
+            if (isFoldable) {
+                this.ctx.fillStyle = this.colors.lineNumber;
+                this.ctx.fillText(this.foldedLines.has(i) ? '»' : '›', this.padding + 10, textY);
+            }
             this.ctx.fillStyle = (this.isFocused && cursorPosition.row === i) ? this.colors.lineNumberActive : this.colors.lineNumber;
             this.ctx.fillText(String(i + 1), this.gutterWidth - this.padding, textY);
             this.ctx.textAlign = 'left';
-
+    
+            let lineToDraw = line;
+            const foldRange = this.foldingRanges.find(r => r.startLine === i);
+            const isFolded = foldRange && this.foldedLines.has(i);
+            let placeholder = '';
+            if (isFolded) {
+                placeholder = ` ${foldRange.placeholder || '...'}`;
+                lineToDraw += placeholder;
+            }
+    
             const drawLineContent = (text, startX, textY, lineStartIndexOffset = 0) => {
-                let currentX = startX;
-                let isLeading = true;
-                let spaceCountInIndent = 0;
+                let currentX = startX; let isLeading = true; let spaceCountInIndent = 0;
                 const lastNonSpaceIndex = (line.match(/\s*$/)?.index ?? line.length) -1;
-
+    
                 for (let j = 0; j < text.length; j++) {
-                    const char = text[j]; const charWidth = this.getCharWidth(char); const charIndex = this.getIndexFromPos(i, 0) + lineStartIndexOffset + j;
+                    const char = text[j]; const charWidth = (j >= line.length && isFolded) ? this.getCharWidth(' ') : this.getCharWidth(char);
+                    const charIndex = this.getIndexFromPos(i, 0) + lineStartIndexOffset + j;
                     const isTrailing = (charIndex - this.getIndexFromPos(i, 0)) >= lastNonSpaceIndex;
-
+    
+                    if(j >= line.length && isFolded) { // Drawing placeholder
+                        this.ctx.fillStyle = this.colors.comment;
+                        this.ctx.fillRect(currentX, y, this.measureText(placeholder), this.lineHeight);
+                        this.ctx.fillStyle = this.colors.text;
+                        this.ctx.fillText(placeholder, currentX, textY);
+                        currentX += this.measureText(placeholder);
+                        break;
+                    }
+    
                     const isHighlightedOccurrence = this.highlightedOccurrences.some(occ => charIndex >= occ.startIndex && charIndex < occ.endIndex);
                     const isBracketHighlight = this.bracketHighlights.some(br => charIndex >= br.startIndex && charIndex < br.endIndex);
-                    if (isHighlightedOccurrence || isBracketHighlight) {
-                        this.ctx.fillStyle = this.colors.occurrenceHighlight;
-                        this.ctx.fillRect(currentX, y, charWidth, this.lineHeight);
-                    }
+                    if (isHighlightedOccurrence || isBracketHighlight) { this.ctx.fillStyle = this.colors.occurrenceHighlight; this.ctx.fillRect(currentX, y, charWidth, this.lineHeight); }
                     
                     if (this.langConfig.highlightIndent && isLeading) {
                         if (char === ' ') { spaceCountInIndent++; this.ctx.fillStyle = this.colors.indentation[Math.floor((spaceCountInIndent - 1) / 4) % 2]; this.ctx.fillRect(currentX, y, charWidth, this.lineHeight); }
@@ -351,13 +421,10 @@ class CanvasEditor {
                     
                     const token = this.tokens.find(t => charIndex >= t.startIndex && charIndex < t.endIndex);
                     this.ctx.fillStyle = token ? this.colors.tokenColors[token.type] || this.colors.tokenColors.default : this.colors.text;
-                    if (char !== '　' || !this.langConfig.highlightWhitespace) {
-                        this.ctx.fillText(char, currentX, textY);
-                    }
+                    if (char !== '　' || !this.langConfig.highlightWhitespace) { this.ctx.fillText(char, currentX, textY); }
                     
                     if (this.langConfig.highlightWhitespace) {
-                        this.ctx.fillStyle = this.colors.whitespaceSymbol;
-                        this.ctx.textAlign = 'center';
+                        this.ctx.fillStyle = this.colors.whitespaceSymbol; this.ctx.textAlign = 'center';
                         if (char === ' ') { this.ctx.fillText('·', currentX + charWidth / 2, textY); }
                         else if (char === '\t') { this.ctx.fillText('»', currentX + charWidth / 2, textY); }
                         else if (char === '　') { this.ctx.fillText('◦', currentX + charWidth / 2, textY); }
@@ -367,64 +434,52 @@ class CanvasEditor {
                 }
                 return currentX;
             };
-
+    
             const lineStartX = this.padding + this.gutterWidth;
-            
             if (this.isFocused && this.isComposing && cursorPosition.row === i) {
-                const lineBefore = line.substring(0, cursorPosition.col);
-                const lineAfter = line.substring(cursorPosition.col);
-                let currentX = drawLineContent(lineBefore, lineStartX, textY);
-                const imeStartX = currentX;
-                this.ctx.fillStyle = this.colors.text;
-                let imeCurrentX = currentX;
+                const lineBefore = line.substring(0, cursorPosition.col); const lineAfter = line.substring(cursorPosition.col);
+                let currentX = drawLineContent(lineBefore, lineStartX, textY); const imeStartX = currentX;
+                this.ctx.fillStyle = this.colors.text; let imeCurrentX = currentX;
                 for (const char of this.compositionText) { this.ctx.fillText(char, imeCurrentX, textY); imeCurrentX += this.getCharWidth(char); }
-                const compositionWidth = this.measureText(this.compositionText);
-                this.ctx.strokeStyle = this.colors.imeUnderline;
-                this.ctx.lineWidth = 1 / dpr;
-                this.ctx.beginPath();
-                this.ctx.moveTo(imeStartX, y + this.lineHeight - 2);
-                this.ctx.lineTo(imeStartX + compositionWidth, y + this.lineHeight - 2);
-                this.ctx.stroke();
-                currentX += compositionWidth;
-                drawLineContent(lineAfter, currentX, textY, cursorPosition.col);
+                const compositionWidth = this.measureText(this.compositionText); this.ctx.strokeStyle = this.colors.imeUnderline;
+                this.ctx.lineWidth = 1 / dpr; this.ctx.beginPath(); this.ctx.moveTo(imeStartX, y + this.lineHeight - 2);
+                this.ctx.lineTo(imeStartX + compositionWidth, y + this.lineHeight - 2); this.ctx.stroke();
+                currentX += compositionWidth; drawLineContent(lineAfter, currentX, textY, cursorPosition.col);
             } else {
-                const finalX = drawLineContent(line, lineStartX, textY);
-                const newlineIndex = this.getIndexFromPos(i, 0) + line.length;
-                if (newlineIndex >= selection.start && newlineIndex < selection.end) {
-                    this.ctx.fillStyle = this.colors.selection;
-                    this.ctx.fillRect(finalX, y, this.h_width, this.lineHeight);
-                }
-                if (this.langConfig.highlightWhitespace) {
-                    this.ctx.fillStyle = this.colors.whitespaceSymbol;
-                    this.ctx.textAlign = 'center';
-                    this.ctx.fillText('↲', finalX + this.h_width / 2, textY);
-                    this.ctx.textAlign = 'left';
+                const finalX = drawLineContent(lineToDraw, lineStartX, textY);
+                if (!isFolded) {
+                    const newlineIndex = this.getIndexFromPos(i, 0) + line.length;
+                    if (newlineIndex >= selection.start && newlineIndex < selection.end) { this.ctx.fillStyle = this.colors.selection; this.ctx.fillRect(finalX, y, this.h_width, this.lineHeight); }
+                    if (this.langConfig.highlightWhitespace) { this.ctx.fillStyle = this.colors.whitespaceSymbol; this.ctx.textAlign = 'center'; this.ctx.fillText('↲', finalX + this.h_width / 2, textY); this.ctx.textAlign = 'left'; }
                 }
             }
-            
+    
             this.diagnostics.forEach(diag => {
-                const lineStartIndex = this.getIndexFromPos(i, 0);
-                const lineEndIndex = lineStartIndex + line.length;
+                const lineStartIndex = this.getIndexFromPos(i, 0); const lineEndIndex = lineStartIndex + line.length;
                 if (diag.startIndex < lineEndIndex && diag.endIndex > lineStartIndex) {
-                    const start = Math.max(diag.startIndex, lineStartIndex);
-                    const end = Math.min(diag.endIndex, lineEndIndex);
-                    const textBefore = line.substring(0, start - lineStartIndex);
-                    const textDiag = line.substring(start - lineStartIndex, end - lineStartIndex);
-                    const x = lineStartX + this.measureText(textBefore);
-                    const width = this.measureText(textDiag);
+                    const start = Math.max(diag.startIndex, lineStartIndex); const end = Math.min(diag.endIndex, lineEndIndex);
+                    const textBefore = line.substring(0, start - lineStartIndex); const textDiag = line.substring(start - lineStartIndex, end - lineStartIndex);
+                    const x = lineStartX + this.measureText(textBefore); const width = this.measureText(textDiag);
                     this.ctx.strokeStyle = diag.severity === 'error' ? this.colors.errorUnderline : this.colors.warningUnderline;
-                    this.ctx.lineWidth = 1 / dpr;
-                    this.ctx.beginPath();
-                    this.ctx.moveTo(x, y + this.lineHeight - 2);
-                    this.ctx.lineTo(x + width, y + this.lineHeight - 2);
-                    this.ctx.stroke();
+                    this.ctx.lineWidth = 1 / dpr; this.ctx.beginPath(); this.ctx.moveTo(x, y + this.lineHeight - 2); this.ctx.lineTo(x + width, y + this.lineHeight - 2); this.ctx.stroke();
                 }
             });
-        });
-        if (this.isFocused && !this.isComposing) { const cursorPos = this.getCursorCoords(this.cursor); if (this.isOverwriteMode) { const char = this.text[this.cursor] || ' '; const charWidth = this.getCharWidth(char); this.ctx.fillStyle = this.colors.overwriteCursor; this.ctx.fillRect(cursorPos.x, cursorPos.y, charWidth, this.lineHeight); } else if (this.cursorBlinkState && !this.hasSelection()) { this.ctx.fillStyle = this.colors.cursor; this.ctx.fillRect(cursorPos.x, cursorPos.y, 2 / dpr, this.lineHeight); } }
+        }
+    
+        if (this.isFocused && !this.isComposing) {
+            const cursorPos = this.getCursorCoords(this.cursor);
+            if (cursorPos.y > -1) {
+                if (this.isOverwriteMode) {
+                    const char = this.text[this.cursor] || ' '; const charWidth = this.getCharWidth(char);
+                    this.ctx.fillStyle = this.colors.overwriteCursor; this.ctx.fillRect(cursorPos.x, cursorPos.y, charWidth, this.lineHeight);
+                } else if (this.cursorBlinkState && !this.hasSelection()) {
+                    this.ctx.fillStyle = this.colors.cursor; this.ctx.fillRect(cursorPos.x, cursorPos.y, 2 / dpr, this.lineHeight);
+                }
+            }
+        }
         this.ctx.restore();
     }
-     
+    
     insertText(newText) { this.recordHistory(); if (this.hasSelection()) { this.deleteSelection(false); } if (this.isOverwriteMode && this.cursor < this.text.length && newText !== '\n') { const end = this.cursor + newText.length; this.text = this.text.slice(0, this.cursor) + newText + this.text.slice(end); this.setCursor(this.cursor + newText.length); } else { const prevCursor = this.cursor; this.text = this.text.slice(0, prevCursor) + newText + this.text.slice(prevCursor); this.setCursor(prevCursor + newText.length); } this.selectionStart = this.selectionEnd = this.cursor; this.updateLines(); this.updateText(this.text); this.updateOccurrencesHighlight(); }
     deleteSelection(history = true) { if (history) { this.recordHistory(); } if(!this.hasSelection()) return; const { start } = this.getSelectionRange(); this.text = this.text.slice(0, start) + this.text.slice(this.getSelectionRange().end); this.setCursor(start); this.selectionStart = this.selectionEnd = this.cursor; this.updateLines(); this.updateText(this.text); this.updateOccurrencesHighlight(); }
     
@@ -444,7 +499,7 @@ class CanvasEditor {
     
     async updateOccurrencesHighlight() { if (!this.languageProvider || this.hasSelection()) { if (this.highlightedOccurrences.length > 0) this.highlightedOccurrences = []; this.hideCompletion(); return; } const occurrences = await this.languageProvider.getOccurrences(this.cursor); this.highlightedOccurrences = occurrences || []; }
     async updateBracketMatching() { if (!this.languageProvider) { this.bracketHighlights = []; return; } const matches = await this.languageProvider.getBracketMatch(this.cursor); this.bracketHighlights = matches || []; }
-    scrollToCursor() { const rect = this.canvas.parentElement.getBoundingClientRect(); const { x: cursorX, y: cursorY } = this.getCursorCoords(this.cursor); const visibleTop = this.scrollY; const visibleBottom = this.scrollY + rect.height; if (cursorY < visibleTop) this.scrollY = cursorY; else if (cursorY + this.lineHeight > visibleBottom) this.scrollY = cursorY + this.lineHeight - rect.height; const visibleLeft = this.scrollX + this.gutterWidth; const visibleRight = this.scrollX + rect.width - this.padding; if (cursorX < visibleLeft) this.scrollX = cursorX - this.gutterWidth - this.padding; else if (cursorX > visibleRight) this.scrollX = cursorX - rect.width + this.padding; this.scrollX = Math.max(0, this.scrollX); }
+    scrollToCursor() { const rect = this.canvas.parentElement.getBoundingClientRect(); const { x: cursorX, y: cursorY } = this.getCursorCoords(this.cursor); if (cursorY < 0) return; const visibleTop = this.scrollY; const visibleBottom = this.scrollY + rect.height; if (cursorY < visibleTop) this.scrollY = cursorY; else if (cursorY + this.lineHeight > visibleBottom) this.scrollY = cursorY + this.lineHeight - rect.height; const visibleLeft = this.scrollX + this.gutterWidth; const visibleRight = this.scrollX + rect.width - this.padding; if (cursorX < visibleLeft) this.scrollX = cursorX - this.gutterWidth - this.padding; else if (cursorX > visibleRight) this.scrollX = cursorX - rect.width + this.padding; this.scrollX = Math.max(0, this.scrollX); }
     resetCursorBlink() { this.cursorBlinkState = true; this.lastBlinkTime = performance.now(); }
     renderLoop(timestamp) { this.updateCursorBlink(timestamp); this.render(); this.updateTextareaPosition(); requestAnimationFrame(this.renderLoop.bind(this)); }
     updateCursorBlink(timestamp) { if (!this.isFocused || this.isOverwriteMode) return; if (timestamp - this.lastBlinkTime > this.blinkInterval) { this.cursorBlinkState = !this.cursorBlinkState; this.lastBlinkTime = timestamp; }}
@@ -453,9 +508,9 @@ class CanvasEditor {
     getSelectionRange() { return { start: Math.min(this.selectionStart, this.selectionEnd), end: Math.max(this.selectionStart, this.selectionEnd) }; }
     getPosFromIndex(index) { let count = 0; for(let i=0; i<this.lines.length; i++){ const lineLength = this.lines[i].length + 1; if(count + lineLength > index){ return { row: i, col: index - count }; } count += lineLength; } return { row: this.lines.length - 1, col: this.lines[this.lines.length - 1].length }; }
     getIndexFromPos(row, col) { let index = 0; for(let i=0; i<row; i++){ index += this.lines[i].length + 1; } return index + col; }
-    getCursorCoords(index) { const { row, col } = this.getPosFromIndex(this.cursor); const textBefore = this.lines[row].substring(0, col); const x = this.padding + this.gutterWidth + this.measureText(textBefore); const y = this.padding + row * this.lineHeight; return { x, y }; }
-    getCursorIndexFromCoords(x, y) { const logicalX = (x < this.gutterWidth) ? 0 : (x - this.gutterWidth - this.padding) + this.scrollX; const logicalY = y + this.scrollY; const row = Math.max(0, Math.min(this.lines.length - 1, Math.floor((logicalY - this.padding) / this.lineHeight))); const line = this.lines[row]; let minDelta = Infinity; let col = 0; if (x < this.gutterWidth) return this.getIndexFromPos(row, 0); for (let i = 0; i <= line.length; i++) { const w = this.measureText(line.substring(0, i)); const delta = Math.abs(logicalX - w); if (delta < minDelta) { minDelta = delta; col = i; } } return this.getIndexFromPos(row, col); }
-    updateTextareaPosition() { if(!this.isFocused) return; const coords = this.getCursorCoords(this.cursor); const relativeX = coords.x - this.scrollX; const relativeY = coords.y - this.scrollY; this.textarea.style.left = `${relativeX}px`; this.textarea.style.top = `${relativeY}px`; if (this.isCompletionVisible) { this.completionList.style.left = `${relativeX}px`; this.completionList.style.top = `${relativeY + this.lineHeight}px`; } }
+    getCursorCoords(index) { const { row, col } = this.getPosFromIndex(this.cursor); const y = this.lineYPositions[row]; if (y === -1) return { x: -1, y: -1 }; const textBefore = this.lines[row].substring(0, col); const x = this.padding + this.gutterWidth + this.measureText(textBefore); return { x, y }; }
+    getCursorIndexFromCoords(x, y, isGutterClick = false) { const logicalY = y + this.scrollY; let row = -1; for(let i = 0; i < this.lineYPositions.length; i++) { const lineY = this.lineYPositions[i]; if(lineY !== -1 && logicalY >= lineY && logicalY < lineY + this.lineHeight) { row = i; break; } } if (row === -1) { row = this.lines.length - 1; } const logicalX = (x < this.gutterWidth) ? 0 : (x - this.gutterWidth - this.padding) + this.scrollX; const line = this.lines[row]; let minDelta = Infinity; let col = 0; if (isGutterClick) return {row, col: 0}; for (let i = 0; i <= line.length; i++) { const w = this.measureText(line.substring(0, i)); const delta = Math.abs(logicalX - w); if (delta < minDelta) { minDelta = delta; col = i; } } return this.getIndexFromPos(row, col); }
+    updateTextareaPosition() { if(!this.isFocused) return; const coords = this.getCursorCoords(this.cursor); if (coords.y < 0) return; const relativeX = coords.x - this.scrollX; const relativeY = coords.y - this.scrollY; this.textarea.style.left = `${relativeX}px`; this.textarea.style.top = `${relativeY}px`; if (this.isCompletionVisible) { this.completionList.style.left = `${relativeX}px`; this.completionList.style.top = `${relativeY + this.lineHeight}px`; } }
     recordHistory() { this.redoStack = []; const state = { text: this.text, cursor: this.cursor, selectionStart: this.selectionStart, selectionEnd: this.selectionEnd }; const lastState = this.undoStack[this.undoStack.length - 1]; if (lastState && lastState.text === state.text && lastState.cursor === state.cursor) return; this.undoStack.push(state); if (this.undoStack.length > 100) this.undoStack.shift(); }
     applyState(state) { if (!state) return; this.text = state.text; this.cursor = state.cursor; this.selectionStart = state.selectionStart; this.selectionEnd = state.selectionEnd; this.updateLines(); this.scrollToCursor(); this.resetCursorBlink(); this.updateText(this.text); this.updateOccurrencesHighlight(); }
     undo() { if (this.undoStack.length === 0) return; const currentState = { text: this.text, cursor: this.cursor, selectionStart: this.selectionStart, selectionEnd: this.selectionEnd }; this.redoStack.push(currentState); const prevState = this.undoStack.pop(); this.applyState(prevState); }
@@ -498,6 +553,20 @@ class CanvasEditor {
         this.updateText(this.text);
         this.setCursor(this.selectionEnd, false);
         this.updateOccurrencesHighlight();
+    }
+
+    toggleFold(startLine) {
+        if (this.foldedLines.has(startLine)) {
+            this.foldedLines.delete(startLine);
+        } else {
+            this.foldedLines.add(startLine);
+            const { row } = this.getPosFromIndex(this.cursor);
+            const range = this.foldingRanges.find(r => r.startLine === startLine);
+            if (range && row > range.startLine && row <= range.endLine) {
+                this.setCursor(this.getIndexFromPos(range.startLine, 0));
+                this.selectionStart = this.selectionEnd = this.cursor;
+            }
+        }
     }
 
     // --- Completion Logic ---
