@@ -38,6 +38,8 @@ class CanvasEditor {
             selection: 'rgba(58, 67, 88, 0.8)', imeUnderline: '#abb2bf',
             indentation: ['rgba(255, 255, 255, 0.07)', 'rgba(255, 255, 255, 0.04)'],
             trailingSpace: 'rgba(255, 82, 82, 0.4)',
+            fullWidthSpace: 'rgba(100, 150, 200, 0.2)',
+            tab: 'rgba(100, 150, 200, 0.2)',
             whitespaceSymbol: '#4a505e', overwriteCursor: 'rgba(82, 139, 255, 0.5)',
             errorUnderline: 'red',
             tokenColors: {
@@ -96,16 +98,20 @@ class CanvasEditor {
     onMouseDown(e) { e.preventDefault(); this.focus(); this.isDragging = true; const pos = this.getCursorIndexFromCoords(e.offsetX, e.offsetY); this.setCursor(pos); this.selectionStart = this.cursor; this.selectionEnd = this.cursor; }
     
     onMouseMove(e) {
-        const currentHoverIndex = this.getCursorIndexFromCoords(e.offsetX, e.offsetY);
         if (this.isDragging) {
             this.hidePopup();
             clearTimeout(this.hoverTimeout);
-            this.setCursor(currentHoverIndex); this.selectionEnd = this.cursor;
-        } else if (currentHoverIndex !== this.lastHoverIndex) {
-            this.lastHoverIndex = currentHoverIndex;
-            this.hidePopup();
-            clearTimeout(this.hoverTimeout);
-            this.hoverTimeout = setTimeout(() => this.handleHover(e), 500);
+            this.lastHoverIndex = -1;
+            const pos = this.getCursorIndexFromCoords(e.offsetX, e.offsetY);
+            this.setCursor(pos); this.selectionEnd = this.cursor;
+        } else {
+            const currentHoverIndex = this.getCursorIndexFromCoords(e.offsetX, e.offsetY);
+            if (currentHoverIndex !== this.lastHoverIndex) {
+                this.lastHoverIndex = currentHoverIndex;
+                this.hidePopup();
+                clearTimeout(this.hoverTimeout);
+                this.hoverTimeout = setTimeout(() => this.handleHover(e), 100);
+            }
         }
     }
 
@@ -161,6 +167,8 @@ class CanvasEditor {
                     // 1. 背景ハイライト
                     if (this.langConfig.highlightIndent && isLeading) {
                         if (char === ' ') { spaceCountInIndent++; this.ctx.fillStyle = this.colors.indentation[Math.floor((spaceCountInIndent - 1) / 4) % 2]; this.ctx.fillRect(currentX, y, charWidth, this.lineHeight); }
+                        else if (char === '\t') { this.ctx.fillStyle = this.colors.tab; this.ctx.fillRect(currentX, y, charWidth, this.lineHeight); }
+                        else if (char === '　') { this.ctx.fillStyle = this.colors.fullWidthSpace; this.ctx.fillRect(currentX, y, charWidth, this.lineHeight); }
                         else { isLeading = false; }
                     } else { isLeading = false; }
                     if (isTrailing && (char === ' ' || char === '\t' || char === '　')) { this.ctx.fillStyle = this.colors.trailingSpace; this.ctx.fillRect(currentX, y, charWidth, this.lineHeight); }
@@ -171,11 +179,16 @@ class CanvasEditor {
                     // 3. テキストとシンボル
                     const token = this.tokens.find(t => charIndex >= t.startIndex && charIndex < t.endIndex);
                     this.ctx.fillStyle = token ? this.colors.tokenColors[token.type] || this.colors.tokenColors.default : this.colors.text;
-                    this.ctx.fillText(char, currentX, textY);
+                    if (char !== '　' || !this.langConfig.highlightWhitespace) {
+                        this.ctx.fillText(char, currentX, textY);
+                    }
                     
-                    if (this.langConfig.highlightWhitespace && char === ' ') {
+                    if (this.langConfig.highlightWhitespace) {
                         this.ctx.fillStyle = this.colors.whitespaceSymbol;
-                        this.ctx.textAlign = 'center'; this.ctx.fillText('·', currentX + charWidth / 2, textY);
+                        this.ctx.textAlign = 'center';
+                        if (char === ' ') { this.ctx.fillText('·', currentX + charWidth / 2, textY); }
+                        else if (char === '\t') { this.ctx.fillText('»', currentX + charWidth / 2, textY); }
+                        else if (char === '　') { this.ctx.fillText('◦', currentX + charWidth / 2, textY); }
                         this.ctx.textAlign = 'left';
                     }
                     currentX += charWidth;
@@ -217,12 +230,29 @@ class CanvasEditor {
                 }
             }
             
-            this.diagnostics.forEach(diag => { /* ... (変更なし) ... */ });
+            this.diagnostics.forEach(diag => {
+                const lineStartIndex = this.getIndexFromPos(i, 0);
+                const lineEndIndex = lineStartIndex + line.length;
+                if (diag.startIndex < lineEndIndex && diag.endIndex > lineStartIndex) {
+                    const start = Math.max(diag.startIndex, lineStartIndex);
+                    const end = Math.min(diag.endIndex, lineEndIndex);
+                    const textBefore = line.substring(0, start - lineStartIndex);
+                    const textDiag = line.substring(start - lineStartIndex, end - lineStartIndex);
+                    const x = this.padding + this.measureText(textBefore);
+                    const width = this.measureText(textDiag);
+                    this.ctx.strokeStyle = this.colors.errorUnderline;
+                    this.ctx.lineWidth = 1;
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(x, y + this.lineHeight - 2);
+                    this.ctx.lineTo(x + width, y + this.lineHeight - 2);
+                    this.ctx.stroke();
+                }
+            });
         });
         if (this.isFocused && !this.isComposing) { const cursorPos = this.getCursorCoords(this.cursor); if (this.isOverwriteMode) { const char = this.text[this.cursor] || ' '; const charWidth = this.getCharWidth(char); this.ctx.fillStyle = this.colors.overwriteCursor; this.ctx.fillRect(cursorPos.x, cursorPos.y, charWidth, this.lineHeight); } else if (this.cursorBlinkState && !this.hasSelection()) { this.ctx.fillStyle = this.colors.cursor; this.ctx.fillRect(cursorPos.x, cursorPos.y, 2, this.lineHeight); } }
         this.ctx.restore();
     }
-    
+     
     insertText(newText) { this.recordHistory(); if (this.hasSelection()) { this.deleteSelection(false); } if (this.isOverwriteMode && this.cursor < this.text.length && newText !== '\n') { const end = this.cursor + newText.length; this.text = this.text.slice(0, this.cursor) + newText + this.text.slice(end); this.setCursor(this.cursor + newText.length); } else { const prevCursor = this.cursor; this.text = this.text.slice(0, prevCursor) + newText + this.text.slice(prevCursor); this.setCursor(prevCursor + newText.length); } this.selectionStart = this.selectionEnd = this.cursor; this.updateLines(); this.updateText(this.text); }
     deleteSelection(history = true) { if (history) { this.recordHistory(); } if(!this.hasSelection()) return; const { start } = this.getSelectionRange(); this.text = this.text.slice(0, start) + this.text.slice(this.getSelectionRange().end); this.setCursor(start); this.selectionStart = this.selectionEnd = this.cursor; this.updateLines(); this.updateText(this.text); }
     
