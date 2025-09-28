@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Canvas テキストエディタ (最終完成版)</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400&family=Space+Mono:wght@400&display=swap');
+        body { font-family: 'Space Mono', 'Noto Sans JP', monospace; background-color: #282c34; display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh; margin: 0; color: #abb2bf; }
+        h1 { font-weight: 400; }
+        #editor-container { position: relative; border: 1px solid #444; box-shadow: 0 4px 12px rgba(0,0,0,0.3); overflow: hidden; }
+        canvas { display: block; background-color: #282c34; cursor: text; }
+        #hidden-input { position: absolute; width: 1px; height: 1.2em; opacity: 0; pointer-events: none; font-size: 16px; padding: 0; border: none; resize: none; overflow: hidden; ime-mode: active; }
+        p { margin-top: 20px; color: #888; font-size: 14px; }
+    </style>
+</head>
+<body>
+    <h1>Canvas テキストエディタ (最終完成版)</h1>
+    <div id="editor-container">
+        <canvas id="editor-canvas" width="800" height="400"></canvas>
+        <textarea id="hidden-input" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
+    </div>
+    <p>空白文字の視覚的ハイライトと改行コードの表示に対応しました。</p>
+    <script>
+        class CanvasEditor {
+            constructor(canvas, textarea) {
+                this.canvas = canvas; this.textarea = textarea; this.ctx = canvas.getContext('2d');
+                this.font = '22px "Space Mono", "Noto Sans JP", monospace'; this.padding = 10; this.lineHeight = 30;
+                this.h_width = 0; this.z_width = 0; this.charWidthCache = new Map();
+                
+                // ★★★★★ 修正: ハイライト用のカラーパレットを拡張 ★★★★★
+                this.colors = {
+                    background: '#282c34', text: '#abb2bf', cursor: '#528bff',
+                    selection: 'rgba(58, 67, 88, 0.8)', imeUnderline: '#abb2bf',
+                    indentation: ['rgba(255, 255, 255, 0.07)', 'rgba(255, 255, 255, 0.04)'], // 交互色
+                    trailingSpace: 'rgba(255, 82, 82, 0.4)',
+                    fullWidthSpace: 'rgba(255, 82, 82, 0.4)', // 全角スペースも警告色
+                    tab: 'rgba(100, 150, 200, 0.2)',
+                    whitespaceSymbol: '#4a505e', // 各種記号の色
+                    overwriteCursor: 'rgba(82, 139, 255, 0.5)'
+                };
+
+                this.text = 'function example() {\n\t// この行はタブでインデントされています。\n    // この行はスペース4つです。    \n    // ↑この行の末尾には半角スペースがあります。\n　　// ↑この行は全角スペースでインデントされています。\n}';
+                this.lines = []; this.cursor = 0; this.selectionStart = 0; this.selectionEnd = 0;
+                this.isFocused = false; this.isComposing = false; this.compositionText = ''; this.isDragging = false;
+                this.scrollX = 0; this.scrollY = 0; this.cursorBlinkState = true; this.lastBlinkTime = 0; this.blinkInterval = 500;
+                this.preferredCursorX = -1; this.isOverwriteMode = false; this.visibleLines = 0;
+                this.init();
+            }
+
+            init() { this.ctx.font = this.font; this.h_width = this.ctx.measureText('W').width; this.z_width = this.h_width * 2; this.visibleLines = Math.floor((this.canvas.height - this.padding * 2) / this.lineHeight); this.updateLines(); this.bindEvents(); requestAnimationFrame(this.renderLoop.bind(this)); }
+            getCharWidth(char) { if (this.charWidthCache.has(char)) { return this.charWidthCache.get(char); } const isHalfWidth = (char.charCodeAt(0) >= 0x0020 && char.charCodeAt(0) <= 0x007e) || (char.charCodeAt(0) >= 0xff61 && char.charCodeAt(0) <= 0xff9f); const width = isHalfWidth ? this.h_width : this.z_width; this.charWidthCache.set(char, width); return width; }
+            measureText(text) { let totalWidth = 0; for (const char of text) { totalWidth += this.getCharWidth(char); } return totalWidth; }
+            bindEvents() { this.canvas.addEventListener('mousedown', this.onMouseDown.bind(this)); this.canvas.addEventListener('mousemove', this.onMouseMove.bind(this)); window.addEventListener('mouseup', this.onMouseUp.bind(this)); this.canvas.addEventListener('wheel', this.onWheel.bind(this)); document.addEventListener('click', (e) => { if (e.target !== this.canvas) this.blur(); }); this.textarea.addEventListener('input', this.onInput.bind(this)); this.textarea.addEventListener('keydown', this.onKeydown.bind(this)); this.textarea.addEventListener('compositionstart', () => { this.isComposing = true; }); this.textarea.addEventListener('compositionupdate', (e) => { this.compositionText = e.data; }); this.textarea.addEventListener('compositionend', (e) => { this.isComposing = false; this.compositionText = ''; this.onInput({target: {value: e.data}}); }); this.textarea.addEventListener('copy', this.onCopy.bind(this)); this.textarea.addEventListener('paste', this.onPaste.bind(this)); }
+            onCopy(e) { e.preventDefault(); if (!this.hasSelection()) return; const { start, end } = this.getSelectionRange(); const selectedText = this.text.substring(start, end); e.clipboardData.setData('text/plain', selectedText); }
+            onPaste(e) { e.preventDefault(); const pasteText = e.clipboardData.getData('text/plain'); if (pasteText) { this.insertText(pasteText); } }
+            focus() { if(this.isFocused) return; this.isFocused = true; this.textarea.focus(); this.resetCursorBlink(); }
+            blur() { this.isFocused = false; this.textarea.blur(); }
+            onMouseDown(e) { e.preventDefault(); this.focus(); this.isDragging = true; const pos = this.getCursorIndexFromCoords(e.offsetX, e.offsetY); this.setCursor(pos); this.selectionStart = this.cursor; this.selectionEnd = this.cursor; }
+            onMouseMove(e) { if (this.isDragging) { const pos = this.getCursorIndexFromCoords(e.offsetX, e.offsetY); this.setCursor(pos); this.selectionEnd = this.cursor; } }
+            onMouseUp() { this.isDragging = false; this.preferredCursorX = -1; }
+            onWheel(e) { e.preventDefault(); const newScrollY = this.scrollY + e.deltaY; const maxScrollY = Math.max(0, this.lines.length * this.lineHeight - this.canvas.height + this.padding * 2); this.scrollY = Math.max(0, Math.min(newScrollY, maxScrollY)); }
+            onInput(e) { if (this.isComposing) return; const newText = e.target.value; if(newText){ this.insertText(newText); this.textarea.value = ''; } }
+            onKeydown(e) { if (this.isComposing) return; if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') { e.preventDefault(); this.selectionStart = 0; this.selectionEnd = this.text.length; this.setCursor(this.text.length); return; } if (e.ctrlKey || e.metaKey) return; switch (e.key) { case 'ArrowLeft': case 'ArrowRight': case 'ArrowUp': case 'ArrowDown': e.preventDefault(); this.handleArrowKeys(e); break; case 'Home': case 'End': e.preventDefault(); this.handleHomeEndKeys(e); break; case 'PageUp': case 'PageDown': e.preventDefault(); this.handlePageKeys(e); break; case 'Insert': e.preventDefault(); this.isOverwriteMode = !this.isOverwriteMode; this.resetCursorBlink(); break; case 'Backspace': e.preventDefault(); if (this.hasSelection()) { this.deleteSelection(); } else if (this.cursor > 0) { const prevCursor = this.cursor - 1; this.text = this.text.slice(0, prevCursor) + this.text.slice(this.cursor); this.setCursor(prevCursor); this.selectionStart = this.selectionEnd = this.cursor; this.updateLines(); } break; case 'Delete': e.preventDefault(); if (this.hasSelection()) { this.deleteSelection(); } else if (this.cursor < this.text.length) { this.text = this.text.slice(0, this.cursor) + this.text.slice(this.cursor + 1); this.updateLines(); } break; case 'Enter': e.preventDefault(); this.insertText('\n'); break; case 'Tab': e.preventDefault(); this.insertText('\t'); break; default: this.preferredCursorX = -1; break; } }
+
+            // ★★★★★ 修正: 描画ロジックを大幅に拡張 ★★★★★
+            render() {
+                this.ctx.fillStyle = this.colors.background; this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height); this.ctx.save(); this.ctx.translate(-this.scrollX, -this.scrollY);
+                const selection = this.getSelectionRange(); const cursorPosition = this.getPosFromIndex(this.cursor);
+
+                this.lines.forEach((line, i) => {
+                    const y = this.padding + i * this.lineHeight; if (y + this.lineHeight < this.scrollY || y > this.scrollY + this.canvas.height) return;
+                    
+                    const drawLineContent = (text, startX, textY, lineStartIndexOffset = 0) => {
+                        let currentX = startX; let isLeading = true; let spaceCountInIndent = 0; const lastNonSpaceIndex = (line.match(/\s*$/)?.index ?? line.length) -1;
+
+                        for (let j = 0; j < text.length; j++) {
+                            const char = text[j]; const charWidth = this.getCharWidth(char);
+                            
+                            // 1. 背景ハイライトの描画
+                            if (isLeading) {
+                                if (char === ' ') { spaceCountInIndent++; this.ctx.fillStyle = this.colors.indentation[Math.floor((spaceCountInIndent - 1) / 4) % 2]; this.ctx.fillRect(currentX, y, charWidth, this.lineHeight); }
+                                else if (char === '\t') { this.ctx.fillStyle = this.colors.tab; this.ctx.fillRect(currentX, y, charWidth, this.lineHeight); }
+                                else if (char === '　') { this.ctx.fillStyle = this.colors.fullWidthSpace; this.ctx.fillRect(currentX, y, charWidth, this.lineHeight); }
+                                else { isLeading = false; }
+                            } else if (char === ' ' && (j + lineStartIndexOffset) > lastNonSpaceIndex) { this.ctx.fillStyle = this.colors.trailingSpace; this.ctx.fillRect(currentX, y, charWidth, this.lineHeight);
+                            } else if (char === '　') { this.ctx.fillStyle = this.colors.fullWidthSpace; this.ctx.fillRect(currentX, y, charWidth, this.lineHeight); }
+
+                            // 2. 選択範囲の描画 (背景ハイライトの上に重ねる)
+                            const charIndex = this.getIndexFromPos(i, 0) + lineStartIndexOffset + j;
+                            if (charIndex >= selection.start && charIndex < selection.end) { this.ctx.fillStyle = this.colors.selection; this.ctx.fillRect(currentX, y, charWidth, this.lineHeight); }
+
+                            // 3. テキスト文字と記号の描画
+                            this.ctx.fillStyle = this.colors.text; this.ctx.fillText(char, currentX, textY);
+                            this.ctx.fillStyle = this.colors.whitespaceSymbol;
+                            if (char === ' ') { this.ctx.fillText('·', currentX + (charWidth - this.measureText('·'))/2, textY); }
+                            else if (char === '\t') { this.ctx.fillText('»', currentX + (charWidth - this.measureText('»'))/2, textY); }
+                            
+                            currentX += charWidth;
+                        }
+                        return currentX; // 描画後のX座標を返す
+                    };
+
+                    const textY = y + this.lineHeight / 2;
+                    if (this.isFocused && this.isComposing && cursorPosition.row === i) {
+                        const lineBefore = line.substring(0, cursorPosition.col); const lineAfter = line.substring(cursorPosition.col);
+                        let currentX = drawLineContent(lineBefore, this.padding, textY);
+                        const imeStartX = currentX; this.ctx.fillStyle = this.colors.text; this.drawText(this.compositionText, currentX, textY); const compositionWidth = this.measureText(this.compositionText); this.ctx.strokeStyle = this.colors.imeUnderline; this.ctx.lineWidth = 1; this.ctx.beginPath(); this.ctx.moveTo(imeStartX, y + this.lineHeight - 2); this.ctx.lineTo(imeStartX + compositionWidth, y + this.lineHeight - 2); this.ctx.stroke(); currentX += compositionWidth;
+                        drawLineContent(lineAfter, currentX, textY, cursorPosition.col);
+                    } else {
+                        const finalX = drawLineContent(line, this.padding, textY);
+                        // 改行記号の描画
+                        this.ctx.fillStyle = this.colors.whitespaceSymbol;
+                        this.ctx.fillText('↲', finalX, textY);
+                    }
+                });
+
+                if (this.isFocused && !this.isComposing) { const cursorPos = this.getCursorCoords(this.cursor); if (this.isOverwriteMode) { const char = this.text[this.cursor] || ' '; const charWidth = this.getCharWidth(char); this.ctx.fillStyle = this.colors.overwriteCursor; this.ctx.fillRect(cursorPos.x, cursorPos.y, charWidth, this.lineHeight); } else if (this.cursorBlinkState && !this.hasSelection()) { this.ctx.fillStyle = this.colors.cursor; this.ctx.fillRect(cursorPos.x, cursorPos.y, 2, this.lineHeight); } }
+                this.ctx.restore();
+            }
+
+            drawText(text, startX, y) { let currentX = startX; for (const char of text) { this.ctx.fillText(char, currentX, y); currentX += this.getCharWidth(char); } }
+            insertText(newText) { if (this.hasSelection()) { this.deleteSelection(); } if (this.isOverwriteMode && this.cursor < this.text.length && newText !== '\n') { const end = this.cursor + newText.length; this.text = this.text.slice(0, this.cursor) + newText + this.text.slice(end); this.setCursor(this.cursor + newText.length); } else { const prevCursor = this.cursor; this.text = this.text.slice(0, prevCursor) + newText + this.text.slice(prevCursor); this.setCursor(prevCursor + newText.length); } this.selectionStart = this.selectionEnd = this.cursor; this.updateLines(); }
+            setCursor(index, resetX = true) { this.cursor = Math.max(0, Math.min(this.text.length, index)); if (resetX) { this.preferredCursorX = -1; } this.scrollToCursor(); this.resetCursorBlink(); }
+            handleArrowKeys(e) { switch (e.key) { case 'ArrowLeft': if (this.cursor > 0) this.setCursor(this.cursor - 1); break; case 'ArrowRight': if (this.cursor < this.text.length) this.setCursor(this.cursor + 1); break; case 'ArrowUp': this.moveCursorLine(-1); break; case 'ArrowDown': this.moveCursorLine(1); break; } if (!e.shiftKey) this.selectionStart = this.selectionEnd = this.cursor; else this.selectionEnd = this.cursor;}
+            moveCursorLine(direction) { const { row, col } = this.getPosFromIndex(this.cursor); if (this.preferredCursorX < 0) { this.preferredCursorX = this.measureText(this.lines[row].substring(0, col)); } const newRow = Math.max(0, Math.min(this.lines.length - 1, row + direction)); if (newRow === row) { this.setCursor(direction < 0 ? 0 : this.text.length); return; } const targetLine = this.lines[newRow]; let minDelta = Infinity; let newCol = 0; for (let i = 0; i <= targetLine.length; i++) { const w = this.measureText(targetLine.substring(0, i)); const delta = Math.abs(this.preferredCursorX - w); if (delta < minDelta) { minDelta = delta; newCol = i; } else { break; } } this.setCursor(this.getIndexFromPos(newRow, newCol), false); }
+            handleHomeEndKeys(e) { const { row, col } = this.getPosFromIndex(this.cursor); const line = this.lines[row]; let newCol = col; if (e.key === 'Home') { const indentEndCol = line.match(/^\s*/)[0].length; if (col !== indentEndCol && indentEndCol !== line.length) { newCol = indentEndCol; } else { newCol = 0; } } else { newCol = line.length; } this.setCursor(this.getIndexFromPos(row, newCol)); if (!e.shiftKey) { this.selectionStart = this.selectionEnd = this.cursor; } else { this.selectionEnd = this.cursor; } }
+            handlePageKeys(e) { const direction = e.key === 'PageUp' ? -1 : 1; const { row } = this.getPosFromIndex(this.cursor); if (this.preferredCursorX < 0) { this.preferredCursorX = this.measureText(this.lines[row].substring(0, this.getPosFromIndex(this.cursor).col)); } const newRow = Math.max(0, Math.min(this.lines.length - 1, row + direction * this.visibleLines)); const targetLine = this.lines[newRow]; let minDelta = Infinity; let newCol = 0; for (let i = 0; i <= targetLine.length; i++) { const w = this.measureText(targetLine.substring(0, i)); const delta = Math.abs(this.preferredCursorX - w); if (delta < minDelta) { minDelta = delta; newCol = i; } else { break; } } this.setCursor(this.getIndexFromPos(newRow, newCol), false); if (!e.shiftKey) { this.selectionStart = this.selectionEnd = this.cursor; } else { this.selectionEnd = this.cursor; } }
+            scrollToCursor() { const { x: cursorX, y: cursorY } = this.getCursorCoords(this.cursor); const visibleTop = this.scrollY; const visibleBottom = this.scrollY + this.canvas.height; if (cursorY < visibleTop) { this.scrollY = cursorY; } else if (cursorY + this.lineHeight > visibleBottom) { this.scrollY = cursorY + this.lineHeight - this.canvas.height; } const visibleLeft = this.scrollX + this.padding; const visibleRight = this.scrollX + this.canvas.width - this.padding; if (cursorX < visibleLeft) { this.scrollX = cursorX - this.padding; } else if (cursorX > visibleRight) { this.scrollX = cursorX - this.canvas.width + this.padding; } this.scrollX = Math.max(0, this.scrollX); }
+            resetCursorBlink() { this.cursorBlinkState = true; this.lastBlinkTime = performance.now(); }
+            deleteSelection() { if(!this.hasSelection()) return; const { start } = this.getSelectionRange(); this.text = this.text.slice(0, start) + this.text.slice(this.getSelectionRange().end); this.setCursor(start); this.selectionStart = this.selectionEnd = this.cursor; this.updateLines(); }
+            renderLoop(timestamp) { this.updateCursorBlink(timestamp); this.render(); this.updateTextareaPosition(); requestAnimationFrame(this.renderLoop.bind(this)); }
+            updateCursorBlink(timestamp) { if (!this.isFocused || this.isOverwriteMode) return; if (timestamp - this.lastBlinkTime > this.blinkInterval) { this.cursorBlinkState = !this.cursorBlinkState; this.lastBlinkTime = timestamp; }}
+            updateLines() { this.lines = this.text.split('\n'); }
+            hasSelection() { return this.selectionStart !== this.selectionEnd; }
+            getSelectionRange() { return { start: Math.min(this.selectionStart, this.selectionEnd), end: Math.max(this.selectionStart, this.selectionEnd) }; }
+            getPosFromIndex(index) { let count = 0; for(let i=0; i<this.lines.length; i++){ const lineLength = this.lines[i].length + 1; if(count + lineLength > index){ return { row: i, col: index - count }; } count += lineLength; } return { row: this.lines.length - 1, col: this.lines[this.lines.length - 1].length }; }
+            getIndexFromPos(row, col) { let index = 0; for(let i=0; i<row; i++){ index += this.lines[i].length + 1; } return index + col; }
+            getCursorCoords(index) { const { row, col } = this.getPosFromIndex(index); const textBefore = this.lines[row].substring(0, col); const x = this.padding + this.measureText(textBefore); const y = this.padding + row * this.lineHeight; return { x, y }; }
+            getCursorIndexFromCoords(x, y) { const logicalX = x + this.scrollX; const logicalY = y + this.scrollY; const row = Math.max(0, Math.min(this.lines.length - 1, Math.floor((logicalY - this.padding) / this.lineHeight))); const line = this.lines[row]; let minDelta = Infinity; let col = 0; for (let i = 0; i <= line.length; i++) { const w = this.measureText(line.substring(0, i)); const delta = Math.abs(logicalX - (this.padding + w)); if (delta < minDelta) { minDelta = delta; col = i; } } return this.getIndexFromPos(row, col); }
+            updateTextareaPosition() { if(!this.isFocused) return; const coords = this.getCursorCoords(this.cursor); this.textarea.style.left = `${coords.x - this.scrollX}px`; this.textarea.style.top = `${coords.y - this.scrollY}px`; }
+        }
+        new CanvasEditor(document.getElementById('editor-canvas'), document.getElementById('hidden-input'));
+    </script>
+</body>
+</html>
