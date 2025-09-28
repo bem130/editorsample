@@ -6,10 +6,10 @@ const OPERATORS = new Set(['+', '-', '*', '/', '%', '<', '>', '=', '!', '&', '|'
 const PUNCTUATION = new Set(['{', '}', '(', ')', '[', ']', ',', ';']);
 const SNIPPETS = [
     { label: 'log', type: 'snippet', insertText: 'console.log($0);', detail: 'console.log(...)' },
-    { label: 'for', type: 'snippet', insertText: 'for (let i = 0; i < 10; i++) {\n    $0\n}', detail: 'for loop' },
-    { label: 'if', type: 'snippet', insertText: 'if ($0) {\n    \n}', detail: 'if statement' },
-    { label: 'ifelse', type: 'snippet', insertText: 'if ($0) {\n    \n} else {\n    \n}', detail: 'if/else statement' },
-    { label: 'func', type: 'snippet', insertText: 'function name($0) {\n    \n}', detail: 'function declaration' },
+    { label: 'for', type: 'snippet', insertText: 'for (let i = 0; i < 10; i++) {\n\t$0\n}', detail: 'for loop' },
+    { label: 'if', type: 'snippet', insertText: 'if ($0) {\n\t\n}', detail: 'if statement' },
+    { label: 'ifelse', type: 'snippet', insertText: 'if ($0) {\n\t\n} else {\n\t\n}', detail: 'if/else statement' },
+    { label: 'func', type: 'snippet', insertText: 'function name($0) {\n\t\n}', detail: 'function declaration' },
 ];
 
 class JavaScriptAnalyzer {
@@ -18,6 +18,7 @@ class JavaScriptAnalyzer {
         this.tokens = [];
         this.diagnostics = [];
         this.declarations = new Map();
+        this.wordBoundaries = [];
         this.offset = 0;
     }
 
@@ -25,6 +26,7 @@ class JavaScriptAnalyzer {
         this.tokenize();
         this.parse();
         this.findDiagnostics();
+        this.computeWordBoundaries();
     }
 
     tokenize() {
@@ -68,10 +70,48 @@ class JavaScriptAnalyzer {
     }
     findDiagnostics() { const regex = /console\.log/g; let match; while((match = regex.exec(this.text))) { this.diagnostics.push({ startIndex: match.index, endIndex: match.index + 11, message: 'デバッグ用のconsole.logが残っています。', severity: 'warning' }); } }
 
+    getCharType(char) {
+        if (/\s/.test(char)) return 'space';
+        if (/[\w$]/.test(char)) return 'word';
+        return 'symbol';
+    }
+    
+    computeWordBoundaries() {
+        this.wordBoundaries = [0];
+        if (this.text.length === 0) return;
+
+        let lastType = this.getCharType(this.text[0]);
+        for (let i = 1; i < this.text.length; i++) {
+            const currentType = this.getCharType(this.text[i]);
+            if (currentType !== lastType) {
+                this.wordBoundaries.push(i);
+                lastType = currentType;
+            }
+        }
+    }
+
+    getNextWordBoundary(index, direction) {
+        if (direction === 'right') {
+            for (const boundary of this.wordBoundaries) {
+                if (boundary > index) {
+                    return boundary;
+                }
+            }
+            return this.text.length;
+        } else { // left
+            for (let i = this.wordBoundaries.length - 1; i >= 0; i--) {
+                const boundary = this.wordBoundaries[i];
+                if (boundary < index) {
+                    return boundary;
+                }
+            }
+            return 0;
+        }
+    }
+    
     getHoverInfoAt(index) { const wordInfo = this.findWordAt(index); if (!wordInfo) return null; if (wordInfo.word === 'console') return { content: 'Console API へのアクセスを提供します。' }; if (wordInfo.word === 'greet' && this.declarations.has('greet')) return { content: 'function greet(name: string): string\n\n指定された名前で挨拶を返します。' }; return null; }
     getDefinitionLocationAt(index) { const wordInfo = this.findWordAt(index); if (!wordInfo) return null; const declaration = this.declarations.get(wordInfo.word); if (declaration) return { targetIndex: declaration.index }; return null; }
     getOccurrencesAt(index) { const wordInfo = this.findWordAt(index); if (!wordInfo || KEYWORDS.has(wordInfo.word)) return []; const occurrences = []; const wordRegex = new RegExp(`\\b${wordInfo.word}\\b`, 'g'); let match; while ((match = wordRegex.exec(this.text))) { occurrences.push({ startIndex: match.index, endIndex: match.index + match[0].length }); } return occurrences; }
-    getNextWordBoundary(index, direction) { const isSpace = (char) => /\s/.test(char); let i = index; if (direction === 'right') { const len = this.text.length; if (i >= len) return len; while (i < len && !isSpace(this.text[i])) i++; while (i < len && isSpace(this.text[i])) i++; return i; } else { if (i <= 0) return 0; i--; while (i >= 0 && isSpace(this.text[i])) i--; while (i >= 0 && !isSpace(this.text[i])) i--; return i + 1; } }
     
     getCompletions(index) {
         let suggestions = [];
