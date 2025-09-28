@@ -201,7 +201,13 @@ class CanvasEditor {
     
     async onKeydown(e) {
         if (this.isComposing) return;
-        if ((e.ctrlKey || e.metaKey)) { switch (e.key.toLowerCase()) { case 'a': e.preventDefault(); this.selectionStart = 0; this.selectionEnd = this.text.length; this.setCursor(this.text.length); return; case 'z': e.preventDefault(); this.undo(); return; case 'y': e.preventDefault(); this.redo(); return; } return; }
+        if ((e.ctrlKey || e.metaKey)) {
+            switch (e.key.toLowerCase()) {
+                case 'a': e.preventDefault(); this.selectionStart = 0; this.selectionEnd = this.text.length; this.setCursor(this.text.length); return;
+                case 'z': e.preventDefault(); this.undo(); return;
+                case 'y': e.preventDefault(); this.redo(); return;
+            }
+        }
         
         if (e.key === 'F12') {
             e.preventDefault();
@@ -212,7 +218,43 @@ class CanvasEditor {
             return;
         }
 
-        switch (e.key) { case 'ArrowLeft': case 'ArrowRight': case 'ArrowUp': case 'ArrowDown': e.preventDefault(); this.handleArrowKeys(e); break; case 'Home': case 'End': e.preventDefault(); this.handleHomeEndKeys(e); break; case 'PageUp': case 'PageDown': e.preventDefault(); this.handlePageKeys(e); break; case 'Insert': e.preventDefault(); this.isOverwriteMode = !this.isOverwriteMode; this.resetCursorBlink(); break; case 'Backspace': e.preventDefault(); if (this.hasSelection()) { this.deleteSelection(); } else if (this.cursor > 0) { this.recordHistory(); const prevCursor = this.cursor - 1; this.text = this.text.slice(0, prevCursor) + this.text.slice(this.cursor); this.setCursor(prevCursor); this.selectionStart = this.selectionEnd = this.cursor; this.updateLines(); this.updateText(this.text); this.updateOccurrencesHighlight(); } break; case 'Delete': e.preventDefault(); if (this.hasSelection()) { this.deleteSelection(); } else if (this.cursor < this.text.length) { this.recordHistory(); this.text = this.text.slice(0, this.cursor) + this.text.slice(this.cursor + 1); this.updateLines(); this.updateText(this.text); this.updateOccurrencesHighlight(); } break; case 'Enter': e.preventDefault(); this.insertText('\n'); break; case 'Tab': e.preventDefault(); this.insertText('\t'); break; default: this.preferredCursorX = -1; break; }
+        switch (e.key) {
+            case 'ArrowLeft':
+            case 'ArrowRight':
+                if (e.ctrlKey) {
+                    e.preventDefault();
+                    const direction = e.key === 'ArrowLeft' ? 'left' : 'right';
+                    if (this.languageProvider) {
+                        const result = await this.languageProvider.getNextWordBoundary(this.cursor, direction);
+                        if (result && typeof result.targetIndex === 'number') {
+                            this.setCursor(result.targetIndex);
+                        }
+                    } else {
+                        // Fallback to default behavior if no language provider
+                        this.handleArrowKeys(new KeyboardEvent('keydown', { key: e.key, shiftKey: e.shiftKey }));
+                    }
+                    if (e.shiftKey) {
+                        this.selectionEnd = this.cursor;
+                    } else {
+                        this.selectionStart = this.selectionEnd = this.cursor;
+                    }
+                    this.updateOccurrencesHighlight();
+                    return;
+                }
+            case 'ArrowUp':
+            case 'ArrowDown':
+                e.preventDefault();
+                this.handleArrowKeys(e);
+                break;
+            case 'Home': case 'End': e.preventDefault(); this.handleHomeEndKeys(e); break;
+            case 'PageUp': case 'PageDown': e.preventDefault(); this.handlePageKeys(e); break;
+            case 'Insert': e.preventDefault(); this.isOverwriteMode = !this.isOverwriteMode; this.resetCursorBlink(); break;
+            case 'Backspace': e.preventDefault(); if (this.hasSelection()) { this.deleteSelection(); } else if (this.cursor > 0) { this.recordHistory(); const prevCursor = this.cursor - 1; this.text = this.text.slice(0, prevCursor) + this.text.slice(this.cursor); this.setCursor(prevCursor); this.selectionStart = this.selectionEnd = this.cursor; this.updateLines(); this.updateText(this.text); this.updateOccurrencesHighlight(); } break;
+            case 'Delete': e.preventDefault(); if (this.hasSelection()) { this.deleteSelection(); } else if (this.cursor < this.text.length) { this.recordHistory(); this.text = this.text.slice(0, this.cursor) + this.text.slice(this.cursor + 1); this.updateLines(); this.updateText(this.text); this.updateOccurrencesHighlight(); } break;
+            case 'Enter': e.preventDefault(); this.insertText('\n'); break;
+            case 'Tab': e.preventDefault(); this.insertText('\t'); break;
+            default: this.preferredCursorX = -1; break;
+        }
     }
     
     render() {

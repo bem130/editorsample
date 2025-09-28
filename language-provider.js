@@ -64,4 +64,8 @@ class BaseLanguageProvider {
     getOccurrences(index) {
         return this._postMessageAndWaitForResult('getOccurrences', { index });
     }
+
+    getNextWordBoundary(index, direction) {
+        return this._postMessageAndWaitForResult('getNextWordBoundary', { index, direction });
+    }
 }

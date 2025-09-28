@@ -142,5 +142,48 @@ self.onmessage = (event) => {
             }
             self.postMessage({ type: 'getOccurrences', payload: occurrences, requestId });
             break;
+            
+        case 'getNextWordBoundary': {
+            const { index, direction } = payload;
+            const isSpace = (char) => /\s/.test(char);
+            let targetIndex;
+
+            if (direction === 'right') {
+                let i = index;
+                const len = textContent.length;
+                if (i >= len) {
+                    targetIndex = len;
+                } else {
+                    // 1. Skip current word/symbol group
+                    while (i < len && !isSpace(textContent[i])) {
+                        i++;
+                    }
+                    // 2. Skip subsequent space group
+                    while (i < len && isSpace(textContent[i])) {
+                        i++;
+                    }
+                    targetIndex = i;
+                }
+            } else { // 'left'
+                let i = index;
+                if (i <= 0) {
+                    targetIndex = 0;
+                } else {
+                    // 1. Skip preceding space group
+                    i--;
+                    while (i >= 0 && isSpace(textContent[i])) {
+                        i--;
+                    }
+                    // 2. Skip preceding word/symbol group
+                    while (i >= 0 && !isSpace(textContent[i])) {
+                        i--;
+                    }
+                    targetIndex = i + 1;
+                }
+            }
+            
+            self.postMessage({ type: 'getNextWordBoundary', payload: { targetIndex }, requestId });
+            break;
+        }
     }
 };
