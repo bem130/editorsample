@@ -30,11 +30,11 @@
 class CanvasEditor {
     constructor(canvas, textarea, popup, problemsPanel) {
         this.canvas = canvas; this.textarea = textarea; this.popup = popup; this.problemsPanel = problemsPanel; this.ctx = canvas.getContext('2d');
-        this.font = '22px "Space Mono", "Noto Sans JP", monospace'; this.padding = 10; this.lineHeight = 30;
+        this.font = '22px "Space Mono", "Noto Sans JP", monospace'; this.padding = 10; this.lineHeight = 30; this.gutterWidth = 60;
         this.h_width = 0; this.z_width = 0; this.charWidthCache = new Map();
         
         this.colors = {
-            background: '#282c34', text: '#abb2bf', cursor: '#528bff',
+            background: '#050a0cff', text: '#abb2bf', cursor: '#528bff',
             selection: 'rgba(58, 67, 88, 0.8)', imeUnderline: '#abb2bf',
             occurrenceHighlight: 'rgba(92, 99, 112, 0.5)',
             indentation: ['rgba(255, 255, 255, 0.07)', 'rgba(255, 255, 255, 0.04)'],
@@ -43,11 +43,13 @@ class CanvasEditor {
             tab: 'rgba(100, 150, 200, 0.2)',
             whitespaceSymbol: '#4a505e', overwriteCursor: 'rgba(82, 139, 255, 0.5)',
             errorUnderline: 'red', warningUnderline: '#d19a66',
+            gutterBackground: '#171a22ff', lineNumber: '#41454eff', lineNumberActive: '#bfc9daff',
+            cursorLineBorder: 'rgba(255, 255, 255, 0.49)',
             tokenColors: {
                 'keyword': '#c678dd', 'string': '#98c379', 'comment': '#5c6370',
                 'function': '#61afef', 'number': '#d19a66', 'boolean': '#d19a66',
                 'operator': '#56b6c2', 'regex': '#d19a66', 'property': '#e06c75',
-                'punctuation': '#abb2bf', 'variable': '#abb2bf', 'default': '#abb2bf'
+                'punctuation': '#b3a5b0ff', 'variable': '#7da5f0ff', 'default': '#b5b7bbff'
             }
         };
 
@@ -216,11 +218,31 @@ class CanvasEditor {
     render() {
         const dpr = window.devicePixelRatio || 1;
         const rect = this.canvas.parentElement.getBoundingClientRect();
-        this.ctx.fillStyle = this.colors.background; this.ctx.fillRect(0, 0, rect.width, rect.height); this.ctx.save(); this.ctx.translate(-this.scrollX, -this.scrollY);
+        this.ctx.fillStyle = this.colors.background; this.ctx.fillRect(0, 0, rect.width, rect.height);
+        
+        this.ctx.fillStyle = this.colors.gutterBackground;
+        this.ctx.fillRect(0, 0, this.gutterWidth, rect.height);
+        
+        this.ctx.save(); this.ctx.translate(-this.scrollX, -this.scrollY);
         const selection = this.getSelectionRange();
         const cursorPosition = this.getPosFromIndex(this.cursor);
         
         this.lines.forEach((line, i) => { const y = this.padding + i * this.lineHeight; if (y + this.lineHeight < this.scrollY || y > this.scrollY + rect.height) return;
+            const textY = y + this.lineHeight / 2;
+            const dpr = window.devicePixelRatio || 1;
+
+            if (this.isFocused && !this.hasSelection() && cursorPosition.row === i) {
+                this.ctx.strokeStyle = this.colors.cursorLineBorder;
+                this.ctx.lineWidth = 1;
+                this.ctx.beginPath(); this.ctx.moveTo(this.gutterWidth, y); this.ctx.lineTo(this.scrollX + this.canvas.width / dpr, y); this.ctx.stroke();
+                this.ctx.beginPath(); this.ctx.moveTo(this.gutterWidth, y + this.lineHeight); this.ctx.lineTo(this.scrollX + this.canvas.width / dpr, y + this.lineHeight); this.ctx.stroke();
+            }
+
+            this.ctx.textAlign = 'right';
+            this.ctx.fillStyle = (this.isFocused && cursorPosition.row === i) ? this.colors.lineNumberActive : this.colors.lineNumber;
+            this.ctx.fillText(String(i + 1), this.gutterWidth - this.padding, textY);
+            this.ctx.textAlign = 'left';
+
             const drawLineContent = (text, startX, textY, lineStartIndexOffset = 0) => {
                 let currentX = startX;
                 let isLeading = true;
@@ -270,12 +292,12 @@ class CanvasEditor {
                 return currentX;
             };
 
-            const textY = y + this.lineHeight / 2;
+            const lineStartX = this.padding + this.gutterWidth;
             
             if (this.isFocused && this.isComposing && cursorPosition.row === i) {
                 const lineBefore = line.substring(0, cursorPosition.col);
                 const lineAfter = line.substring(cursorPosition.col);
-                let currentX = drawLineContent(lineBefore, this.padding, textY);
+                let currentX = drawLineContent(lineBefore, lineStartX, textY);
                 const imeStartX = currentX;
                 this.ctx.fillStyle = this.colors.text;
                 let imeCurrentX = currentX;
@@ -290,7 +312,7 @@ class CanvasEditor {
                 currentX += compositionWidth;
                 drawLineContent(lineAfter, currentX, textY, cursorPosition.col);
             } else {
-                const finalX = drawLineContent(line, this.padding, textY);
+                const finalX = drawLineContent(line, lineStartX, textY);
                 const newlineIndex = this.getIndexFromPos(i, 0) + line.length;
                 if (newlineIndex >= selection.start && newlineIndex < selection.end) {
                     this.ctx.fillStyle = this.colors.selection;
@@ -312,7 +334,7 @@ class CanvasEditor {
                     const end = Math.min(diag.endIndex, lineEndIndex);
                     const textBefore = line.substring(0, start - lineStartIndex);
                     const textDiag = line.substring(start - lineStartIndex, end - lineStartIndex);
-                    const x = this.padding + this.measureText(textBefore);
+                    const x = lineStartX + this.measureText(textBefore);
                     const width = this.measureText(textDiag);
                     this.ctx.strokeStyle = diag.severity === 'error' ? this.colors.errorUnderline : this.colors.warningUnderline;
                     this.ctx.lineWidth = 1 / dpr;
@@ -357,10 +379,10 @@ class CanvasEditor {
         } else if (cursorY + this.lineHeight > visibleBottom) {
             this.scrollY = cursorY + this.lineHeight - rect.height;
         }
-        const visibleLeft = this.scrollX + this.padding;
+        const visibleLeft = this.scrollX + this.gutterWidth;
         const visibleRight = this.scrollX + rect.width - this.padding;
         if (cursorX < visibleLeft) {
-            this.scrollX = cursorX - this.padding;
+            this.scrollX = cursorX - this.gutterWidth - this.padding;
         } else if (cursorX > visibleRight) {
             this.scrollX = cursorX - rect.width + this.padding;
         }
@@ -374,8 +396,19 @@ class CanvasEditor {
     getSelectionRange() { return { start: Math.min(this.selectionStart, this.selectionEnd), end: Math.max(this.selectionStart, this.selectionEnd) }; }
     getPosFromIndex(index) { let count = 0; for(let i=0; i<this.lines.length; i++){ const lineLength = this.lines[i].length + 1; if(count + lineLength > index){ return { row: i, col: index - count }; } count += lineLength; } return { row: this.lines.length - 1, col: this.lines[this.lines.length - 1].length }; }
     getIndexFromPos(row, col) { let index = 0; for(let i=0; i<row; i++){ index += this.lines[i].length + 1; } return index + col; }
-    getCursorCoords(index) { const { row, col } = this.getPosFromIndex(this.cursor); const textBefore = this.lines[row].substring(0, col); const x = this.padding + this.measureText(textBefore); const y = this.padding + row * this.lineHeight; return { x, y }; }
-    getCursorIndexFromCoords(x, y) { const logicalX = x + this.scrollX; const logicalY = y + this.scrollY; const row = Math.max(0, Math.min(this.lines.length - 1, Math.floor((logicalY - this.padding) / this.lineHeight))); const line = this.lines[row]; let minDelta = Infinity; let col = 0; for (let i = 0; i <= line.length; i++) { const w = this.measureText(line.substring(0, i)); const delta = Math.abs(logicalX - (this.padding + w)); if (delta < minDelta) { minDelta = delta; col = i; } } return this.getIndexFromPos(row, col); }
+    getCursorCoords(index) { const { row, col } = this.getPosFromIndex(this.cursor); const textBefore = this.lines[row].substring(0, col); const x = this.padding + this.gutterWidth + this.measureText(textBefore); const y = this.padding + row * this.lineHeight; return { x, y }; }
+    getCursorIndexFromCoords(x, y) {
+        const logicalX = (x < this.gutterWidth) ? 0 : (x - this.gutterWidth - this.padding) + this.scrollX;
+        const logicalY = y + this.scrollY;
+        const row = Math.max(0, Math.min(this.lines.length - 1, Math.floor((logicalY - this.padding) / this.lineHeight)));
+        const line = this.lines[row];
+        let minDelta = Infinity;
+        let col = 0;
+        if (x < this.gutterWidth) {
+            return this.getIndexFromPos(row, 0);
+        }
+        for (let i = 0; i <= line.length; i++) { const w = this.measureText(line.substring(0, i)); const delta = Math.abs(logicalX - w); if (delta < minDelta) { minDelta = delta; col = i; } } return this.getIndexFromPos(row, col);
+    }
     updateTextareaPosition() { if(!this.isFocused) return; const coords = this.getCursorCoords(this.cursor); this.textarea.style.left = `${coords.x - this.scrollX}px`; this.textarea.style.top = `${coords.y - this.scrollY}px`; }
     recordHistory() { this.redoStack = []; const state = { text: this.text, cursor: this.cursor, selectionStart: this.selectionStart, selectionEnd: this.selectionEnd }; const lastState = this.undoStack[this.undoStack.length - 1]; if (lastState && lastState.text === state.text && lastState.cursor === state.cursor) { return; } this.undoStack.push(state); if (this.undoStack.length > 100) { this.undoStack.shift(); } }
     applyState(state) { if (!state) return; this.text = state.text; this.cursor = state.cursor; this.selectionStart = state.selectionStart; this.selectionEnd = state.selectionEnd; this.updateLines(); this.scrollToCursor(); this.resetCursorBlink(); this.updateText(this.text); this.updateOccurrencesHighlight(); }
