@@ -21,6 +21,52 @@
         #problems-panel .severity-warning { border-left: 2px solid #d19a66; }
         #problems-panel .severity-error { border-left: 2px solid #e06c75; }
         #problems-panel .problem-location { color: #888; font-size: 12px; margin-left: 8px; }
+
+        #completion-list {
+            position: absolute;
+            display: none;
+            background-color: #21252b;
+            border: 1px solid #3a3f4b;
+            border-radius: 4px;
+            list-style: none;
+            padding: 4px;
+            margin: 0;
+            max-height: 200px;
+            min-width: 200px;
+            overflow-y: auto;
+            font-size: 14px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            z-index: 1000;
+        }
+        #completion-list li {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 4px 8px;
+            cursor: pointer;
+            border-radius: 3px;
+            white-space: nowrap;
+        }
+        #completion-list li.selected {
+            background-color: #3a3f4b;
+        }
+        #completion-list .completion-item-left {
+            display: flex;
+            align-items: center;
+        }
+        #completion-list .completion-type {
+            width: 20px;
+            text-align: center;
+            color: #888;
+            margin-right: 8px;
+            font-style: italic;
+            font-weight: bold;
+        }
+        #completion-list .completion-detail {
+            margin-left: 16px;
+            color: #888;
+            font-size: 12px;
+        }
     </style>
 </head>
 <body>
@@ -29,6 +75,7 @@
         <div id="editor-container">
             <canvas id="editor-canvas"></canvas>
             <textarea id="hidden-input" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
+            <ul id="completion-list"></ul>
         </div>
         <div id="problems-panel">
             <h3>Problems</h3>
@@ -46,8 +93,9 @@
             const textarea = document.getElementById('hidden-input');
             const popup = document.getElementById('popup');
             const problemsPanel = document.querySelector('#problems-panel ul');
+            const completionList = document.getElementById('completion-list');
             
-            const editor = new CanvasEditor(canvas, textarea, popup, problemsPanel);
+            const editor = new CanvasEditor(canvas, textarea, popup, problemsPanel, completionList);
             const jsProvider = new JavaScriptLanguageProvider();
             editor.registerLanguageProvider('javascript', jsProvider);
         });

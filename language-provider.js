@@ -68,4 +68,8 @@ class BaseLanguageProvider {
     getNextWordBoundary(index, direction) {
         return this._postMessageAndWaitForResult('getNextWordBoundary', { index, direction });
     }
+
+    getCompletions(index) {
+        return this._postMessageAndWaitForResult('getCompletions', { index });
+    }
 }
