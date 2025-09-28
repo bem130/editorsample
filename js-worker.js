@@ -3,12 +3,6 @@ let textContent = '';
 let tokens = [];
 let diagnostics = [];
 
-/**
- * テキストから特定の単語（識別子）をカーソル位置に基づいて抽出します。
- * @param {string} text - 全文
- * @param {number} index - カーソルの文字インデックス
- * @returns {{word: string, startIndex: number, endIndex: number} | null}
- */
 function findWordAt(text, index) {
     const wordRegex = /[\w$]+/g;
     let match;
@@ -22,25 +16,50 @@ function findWordAt(text, index) {
     return null;
 }
 
-/**
- * テキストが更新されるたびに呼び出され、構文解析を実行する
- */
+function tokenize(regex, type, tokensArray, group = 0) {
+    let match;
+    while (match = regex.exec(textContent)) {
+        const startIndex = match.index;
+        tokensArray.push({
+            startIndex: startIndex,
+            endIndex: startIndex + match[group].length,
+            type
+        });
+    }
+}
+
 function analyze() {
     const newTokens = [];
-    const keywords = /\b(function|const|let|var|if|else|return|async|await|new|class|extends|super)\b/g;
-    const strings = /(`([^`])*`|'([^'])*'|"([^"])*")/g;
-    const comments = /\/\/[^\n]*|\/\*[\s\S]*?\*\//g;
-    const functions = /(\w+)\s*(?=\()/g;
-    const numbers = /\b\d+(\.\d+)?\b/g;
+    const tokenDefinitions = [
+        { type: 'comment', regex: /\/\/[^\n]*|\/\*[\s\S]*?\*\//g },
+        { type: 'string', regex: /(`([^`])*`|'([^'])*'|"([^"])*")/g },
+        { type: 'keyword', regex: /\b(class|extends|super|const|let|var|function|async|await|new|if|else|return|for|while|do|switch|case|default|break|continue|try|catch|finally|import|export|from|as|this)\b/g },
+        { type: 'boolean', regex: /\b(true|false)\b/g },
+        { type: 'number', regex: /\b\d+(\.\d+)?\b/g },
+        { type: 'regex', regex: /\/(?![*+?])(?:[^\r\n[/]|\\[.])*\/[gimsuy]*/g },
+        { type: 'function', regex: /(\w+)\s*(?=\()/g, group: 1 },
+        { type: 'property', regex: /\.([a-zA-Z0-9_$]+)/g, group: 0 },
+        { type: 'operator', regex: /[+\-*/%<>=!&|?:]+/g },
+        { type: 'punctuation', regex: /[{}()[\].,;]/g }
+    ];
 
-    let match;
-    while(match = keywords.exec(textContent)) { newTokens.push({ startIndex: match.index, endIndex: match.index + match[0].length, type: 'keyword' }); }
-    while(match = strings.exec(textContent)) { newTokens.push({ startIndex: match.index, endIndex: match.index + match[0].length, type: 'string' }); }
-    while(match = comments.exec(textContent)) { newTokens.push({ startIndex: match.index, endIndex: match.index + match[0].length, type: 'comment' }); }
-    while(match = functions.exec(textContent)) { if(!keywords.test(match[1])) newTokens.push({ startIndex: match.index, endIndex: match.index + match[1].length, type: 'function' }); }
-    while(match = numbers.exec(textContent)) { newTokens.push({ startIndex: match.index, endIndex: match.index + match[0].length, type: 'number' }); }
+    tokenDefinitions.forEach(({ type, regex, group }) => {
+        tokenize(regex, type, newTokens, group);
+    });
     
+    newTokens.sort((a, b) => a.startIndex - b.startIndex);
+    
+    const filteredTokens = [];
+    let lastEndIndex = -1;
+    for (const token of newTokens) {
+        if (token.startIndex >= lastEndIndex) {
+            filteredTokens.push(token);
+            lastEndIndex = token.endIndex;
+        }
+    }
+
     const newDiagnostics = [];
+    let match;
     const consoleLogRegex = /console\.log/g;
     while(match = consoleLogRegex.exec(textContent)) {
         newDiagnostics.push({
@@ -51,7 +70,7 @@ function analyze() {
         });
     }
 
-    tokens = newTokens;
+    tokens = filteredTokens;
     diagnostics = newDiagnostics;
 
     self.postMessage({
@@ -80,8 +99,12 @@ self.onmessage = (event) => {
         case 'getHoverInfo':
             let hoverContent = null;
             const wordInfo = findWordAt(textContent, payload.index);
-            if (wordInfo && wordInfo.word === 'console') {
-                hoverContent = 'Console API へのアクセスを提供します。';
+            if (wordInfo) {
+                if(wordInfo.word === 'console'){
+                    hoverContent = 'Console API へのアクセスを提供します。';
+                } else if(wordInfo.word === 'greet') {
+                    hoverContent = 'function greet(name: string): string\n\n指定された名前で挨拶を返します。';
+                }
             }
             self.postMessage({ type: 'getHoverInfo', payload: { content: hoverContent }, requestId });
             break;
@@ -90,7 +113,7 @@ self.onmessage = (event) => {
             let target = null;
             const wordAtCursor = findWordAt(textContent, payload.index);
             if (wordAtCursor) {
-                const definitionRegex = new RegExp(`(?:function|const|let|var)\\s+(${wordAtCursor.word})\\b`);
+                const definitionRegex = new RegExp(`(?:function|const|let|var|class)\\s+(${wordAtCursor.word})\\b`);
                 const match = definitionRegex.exec(textContent);
                 if (match) {
                     const definitionIndex = match.index + match[0].indexOf(match[1]);
