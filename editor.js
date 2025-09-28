@@ -277,7 +277,18 @@ class CanvasEditor {
             case 'Insert': e.preventDefault(); this.isOverwriteMode = !this.isOverwriteMode; this.resetCursorBlink(); break;
             case 'Backspace': e.preventDefault(); if (this.hasSelection()) { this.deleteSelection(); } else if (this.cursor > 0) { this.recordHistory(); const prevCursor = this.cursor - 1; this.text = this.text.slice(0, prevCursor) + this.text.slice(this.cursor); this.setCursor(prevCursor); this.selectionStart = this.selectionEnd = this.cursor; this.updateLines(); this.updateText(this.text); this.updateOccurrencesHighlight(); } this.triggerCompletion(); break;
             case 'Delete': e.preventDefault(); if (this.hasSelection()) { this.deleteSelection(); } else if (this.cursor < this.text.length) { this.recordHistory(); this.text = this.text.slice(0, this.cursor) + this.text.slice(this.cursor + 1); this.updateLines(); this.updateText(this.text); this.updateOccurrencesHighlight(); } this.triggerCompletion(); break;
-            case 'Tab': e.preventDefault(); this.insertText('\t'); break;
+            case 'Tab':
+                e.preventDefault();
+                if (this.languageProvider) {
+                    const { start, end } = this.getSelectionRange();
+                    const result = await this.languageProvider.adjustIndentation(start, end, e.shiftKey);
+                    if (result) {
+                        this.applyTextEdit(result.newText, result.newSelectionStart, result.newSelectionEnd);
+                    }
+                } else {
+                    this.insertText('\t');
+                }
+                return;
             default: this.preferredCursorX = -1; break;
         }
     }

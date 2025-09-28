@@ -90,6 +90,71 @@ class JavaScriptAnalyzer {
         return { textToInsert: '\n' + currentIndent, cursorOffset: currentIndent.length + 1 };
     }
 
+    adjustIndentationAt(selectionStart, selectionEnd, isOutdent) {
+        const indentUnit = '    ';
+        const oldLines = this.text.split('\n');
+        const newLines = [...oldLines];
+
+        let startLineIndex, endLineIndex;
+
+        let charIndex = 0;
+        for (let i = 0; i < oldLines.length; i++) {
+            const line = oldLines[i];
+            const lineEndIndex = charIndex + line.length;
+
+            if (startLineIndex === undefined && selectionStart <= lineEndIndex) {
+                startLineIndex = i;
+            }
+
+            if (startLineIndex !== undefined) {
+                 if (selectionEnd === charIndex && selectionStart < selectionEnd) {
+                     endLineIndex = i - 1;
+                     break;
+                 }
+                 if (selectionEnd <= lineEndIndex) {
+                     endLineIndex = i;
+                     break;
+                 }
+            }
+            charIndex += line.length + 1;
+        }
+
+        if (startLineIndex === undefined) return { newText: this.text, newSelectionStart: selectionStart, newSelectionEnd: selectionEnd };
+        if (endLineIndex === undefined) endLineIndex = oldLines.length - 1;
+        
+        let firstLineDiff = 0;
+        let totalDiff = 0;
+
+        for (let i = startLineIndex; i <= endLineIndex; i++) {
+            if (newLines[i].length === 0 && (i !== startLineIndex || startLineIndex !== endLineIndex)) continue;
+            
+            let diff = 0;
+            if (isOutdent) {
+                const leadingWhitespace = newLines[i].match(/^\s*/)[0];
+                const removeCount = Math.min(leadingWhitespace.length, indentUnit.length);
+                if (removeCount > 0) {
+                    newLines[i] = newLines[i].substring(removeCount);
+                    diff = -removeCount;
+                }
+            } else {
+                newLines[i] = indentUnit + newLines[i];
+                diff = indentUnit.length;
+            }
+            
+            if (i === startLineIndex) {
+                firstLineDiff = diff;
+            }
+            totalDiff += diff;
+        }
+
+        const newText = newLines.join('\n');
+        
+        const newSelectionStart = selectionStart + firstLineDiff;
+        const newSelectionEnd = selectionEnd + totalDiff;
+        
+        return { newText, newSelectionStart, newSelectionEnd };
+    }
+
     toggleCommentAt(selectionStart, selectionEnd) { const lineStartIndex = this.text.lastIndexOf('\n', selectionStart - 1) + 1; let lineEndIndex = this.text.indexOf('\n', selectionEnd); if (lineEndIndex === -1) lineEndIndex = this.text.length; const selectedLinesText = this.text.substring(lineStartIndex, lineEndIndex); const lines = selectedLinesText.split('\n'); const isAllCommented = lines.filter(line => line.trim() !== '').every(line => line.trim().startsWith('//')); let newLines, selectionDelta = 0; if (isAllCommented) { newLines = lines.map(line => { const match = line.match(/^(\s*)\/\/\s?(.*)/); if (match) { selectionDelta -= 3; return match[1] + match[2]; } return line; }); } else { const minIndent = Math.min(...lines.filter(l => l.trim()).map(l => l.match(/^\s*/)[0].length)); const indent = ' '.repeat(minIndent); newLines = lines.map(line => { if (line.trim() === '') return line; selectionDelta += 2; return indent + '//' + line.substring(minIndent); }); } const newText = this.text.substring(0, lineStartIndex) + newLines.join('\n') + this.text.substring(lineEndIndex); return { newText, newSelectionStart: selectionStart, newSelectionEnd: selectionEnd + selectionDelta }; }
     
     isAtEnd(offset = this.offset) { return offset >= this.text.length; }
@@ -118,5 +183,6 @@ self.onmessage = (event) => {
         case 'getCompletions': if(analyzer) self.postMessage({ type, payload: analyzer.getCompletions(payload.index), requestId}); break;
         case 'getIndentation': if (analyzer) self.postMessage({ type, payload: analyzer.getIndentationAt(payload.index), requestId }); break;
         case 'toggleComment': if (analyzer) self.postMessage({ type, payload: analyzer.toggleCommentAt(payload.selectionStart, payload.selectionEnd), requestId }); break;
+        case 'adjustIndentation': if (analyzer) self.postMessage({ type, payload: analyzer.adjustIndentationAt(payload.selectionStart, payload.selectionEnd, payload.isOutdent), requestId }); break;
     }
 };
