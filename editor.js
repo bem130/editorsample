@@ -228,6 +228,16 @@ class CanvasEditor {
                 case 'a': e.preventDefault(); this.selectionStart = 0; this.selectionEnd = this.text.length; this.setCursor(this.text.length); return;
                 case 'z': e.preventDefault(); this.undo(); return;
                 case 'y': e.preventDefault(); this.redo(); return;
+                case '/':
+                    e.preventDefault();
+                    if (this.languageProvider) {
+                        const { start, end } = this.getSelectionRange();
+                        const result = await this.languageProvider.toggleComment(start, end);
+                        if (result) {
+                            this.applyTextEdit(result.newText, result.newSelectionStart, result.newSelectionEnd);
+                        }
+                    }
+                    return;
             }
         }
         
@@ -241,6 +251,10 @@ class CanvasEditor {
         }
 
         switch (e.key) {
+            case 'Enter':
+                e.preventDefault();
+                this.handleEnterKey();
+                return;
             case 'ArrowLeft': case 'ArrowRight':
                 if (e.ctrlKey) {
                     e.preventDefault();
@@ -263,7 +277,6 @@ class CanvasEditor {
             case 'Insert': e.preventDefault(); this.isOverwriteMode = !this.isOverwriteMode; this.resetCursorBlink(); break;
             case 'Backspace': e.preventDefault(); if (this.hasSelection()) { this.deleteSelection(); } else if (this.cursor > 0) { this.recordHistory(); const prevCursor = this.cursor - 1; this.text = this.text.slice(0, prevCursor) + this.text.slice(this.cursor); this.setCursor(prevCursor); this.selectionStart = this.selectionEnd = this.cursor; this.updateLines(); this.updateText(this.text); this.updateOccurrencesHighlight(); } this.triggerCompletion(); break;
             case 'Delete': e.preventDefault(); if (this.hasSelection()) { this.deleteSelection(); } else if (this.cursor < this.text.length) { this.recordHistory(); this.text = this.text.slice(0, this.cursor) + this.text.slice(this.cursor + 1); this.updateLines(); this.updateText(this.text); this.updateOccurrencesHighlight(); } this.triggerCompletion(); break;
-            case 'Enter': e.preventDefault(); this.insertText('\n'); break;
             case 'Tab': e.preventDefault(); this.insertText('\t'); break;
             default: this.preferredCursorX = -1; break;
         }
@@ -427,6 +440,44 @@ class CanvasEditor {
     redo() { if (this.redoStack.length === 0) return; const currentState = { text: this.text, cursor: this.cursor, selectionStart: this.selectionStart, selectionEnd: this.selectionEnd }; this.undoStack.push(currentState); const nextState = this.redoStack.pop(); this.applyState(nextState); }
     updateProblemsPanel() { if (!this.problemsPanel) return; this.problemsPanel.innerHTML = ''; this.diagnostics.forEach(diag => { const { row, col } = this.getPosFromIndex(diag.startIndex); const li = document.createElement('li'); li.className = `severity-${diag.severity}`; li.textContent = diag.message; const locationSpan = document.createElement('span'); locationSpan.className = 'problem-location'; locationSpan.textContent = `[${row + 1}, ${col + 1}]`; li.appendChild(locationSpan); li.addEventListener('click', () => { this.setCursor(diag.startIndex); this.textarea.focus(); this.focus(); }); this.problemsPanel.appendChild(li); }); }
 
+    // --- New/Modified Methods ---
+    async handleEnterKey() {
+        if (this.languageProvider) {
+            const { start } = this.getSelectionRange();
+            const result = await this.languageProvider.getIndentation(start);
+            if (result && result.textToInsert !== undefined && result.cursorOffset !== undefined) {
+                this.replaceSelectionAndSetCursor(result.textToInsert, result.cursorOffset);
+                return;
+            }
+        }
+        const { row } = this.getPosFromIndex(this.cursor);
+        const currentIndent = this.lines[row].match(/^\s*/)[0];
+        this.insertText('\n' + currentIndent);
+    }
+    
+    replaceSelectionAndSetCursor(text, cursorOffsetFromStart) {
+        this.recordHistory();
+        const { start, end } = this.getSelectionRange();
+        this.text = this.text.slice(0, start) + text + this.text.slice(end);
+        const newCursorPos = start + cursorOffsetFromStart;
+        this.setCursor(newCursorPos);
+        this.selectionStart = this.selectionEnd = this.cursor;
+        this.updateLines();
+        this.updateText(this.text);
+        this.updateOccurrencesHighlight();
+    }
+
+    applyTextEdit(newText, newSelectionStart, newSelectionEnd) {
+        this.recordHistory();
+        this.text = newText;
+        this.selectionStart = newSelectionStart;
+        this.selectionEnd = newSelectionEnd;
+        this.updateLines();
+        this.updateText(this.text);
+        this.setCursor(this.selectionEnd, false);
+        this.updateOccurrencesHighlight();
+    }
+
     // --- Completion Logic ---
     async triggerCompletion() { if (!this.languageProvider) return; const suggestions = await this.languageProvider.getCompletions(this.cursor); if (suggestions && suggestions.length > 0) this.showCompletion(suggestions); else this.hideCompletion(); }
     getCompletionTypeAbbreviation(type) { switch (type) { case 'keyword': return 'K'; case 'snippet': return 'S'; case 'function': return 'f'; case 'class': return 'C'; case 'variable': case 'const': case 'let': case 'var': return 'v'; default: return '·'; } }
@@ -447,20 +498,21 @@ class CanvasEditor {
         const cursorPlaceholder = '$0';
         const placeholderIndex = rawInsertText.indexOf(cursorPlaceholder);
         
-        let finalInsertText;
-        let finalCursorOffset;
+        let finalInsertText = rawInsertText;
+        let finalCursorOffset = rawInsertText.length;
 
         if (placeholderIndex !== -1) {
             finalInsertText = rawInsertText.replace(cursorPlaceholder, '');
             finalCursorOffset = placeholderIndex;
-        } else {
-            finalInsertText = rawInsertText;
-            finalCursorOffset = rawInsertText.length;
         }
 
+        const textBeforeSelection = this.text.slice(0, startIndex);
+        const textAfterSelection = this.text.slice(this.cursor);
+        
         this.recordHistory();
-        this.text = this.text.slice(0, startIndex) + finalInsertText + this.text.slice(this.cursor);
-        this.setCursor(startIndex + finalCursorOffset);
+        this.text = textBeforeSelection + finalInsertText + textAfterSelection;
+        const newCursorPos = startIndex + finalCursorOffset;
+        this.setCursor(newCursorPos);
         this.selectionStart = this.selectionEnd = this.cursor;
 
         this.updateLines();

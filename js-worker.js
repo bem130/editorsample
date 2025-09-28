@@ -6,10 +6,10 @@ const OPERATORS = new Set(['+', '-', '*', '/', '%', '<', '>', '=', '!', '&', '|'
 const PUNCTUATION = new Set(['{', '}', '(', ')', '[', ']', ',', ';']);
 const SNIPPETS = [
     { label: 'log', type: 'snippet', insertText: 'console.log($0);', detail: 'console.log(...)' },
-    { label: 'for', type: 'snippet', insertText: 'for (let i = 0; i < 10; i++) {\n\t$0\n}', detail: 'for loop' },
-    { label: 'if', type: 'snippet', insertText: 'if ($0) {\n\t\n}', detail: 'if statement' },
-    { label: 'ifelse', type: 'snippet', insertText: 'if ($0) {\n\t\n} else {\n\t\n}', detail: 'if/else statement' },
-    { label: 'func', type: 'snippet', insertText: 'function name($0) {\n\t\n}', detail: 'function declaration' },
+    { label: 'for', type: 'snippet', insertText: 'for (let i = 0; i < 10; i++) {\n    $0\n}', detail: 'for loop' },
+    { label: 'if', type: 'snippet', insertText: 'if ($0) {\n    \n}', detail: 'if statement' },
+    { label: 'ifelse', type: 'snippet', insertText: 'if ($0) {\n    \n} else {\n    \n}', detail: 'if/else statement' },
+    { label: 'func', type: 'snippet', insertText: 'function name($0) {\n    \n}', detail: 'function declaration' },
 ];
 
 class JavaScriptAnalyzer {
@@ -30,6 +30,7 @@ class JavaScriptAnalyzer {
     }
 
     tokenize() {
+        this.offset = 0; this.tokens = [];
         while (!this.isAtEnd()) {
             this.offset = this.skipWhitespace();
             if (this.isAtEnd()) break;
@@ -56,83 +57,40 @@ class JavaScriptAnalyzer {
     scanPunctuation() { const start = this.offset; this.advance(); return this.createToken('punctuation', start, this.offset); }
 
     parse() {
-        for (let i = 0; i < this.tokens.length; i++) {
-            const token = this.tokens[i];
-            const tokenText = this.text.substring(token.startIndex, token.endIndex);
-            if (token.type === 'keyword' && ['const', 'let', 'var', 'function', 'class'].includes(tokenText)) {
-                const nextToken = this.findNextMeaningfulToken(i);
-                if (nextToken && (nextToken.type === 'variable' || nextToken.type === 'function')) {
-                    const name = this.text.substring(nextToken.startIndex, nextToken.endIndex);
-                    if (!this.declarations.has(name)) this.declarations.set(name, { index: nextToken.startIndex, type: tokenText });
-                }
-            }
-        }
+        this.declarations.clear(); for (let i = 0; i < this.tokens.length; i++) { const token = this.tokens[i]; const tokenText = this.text.substring(token.startIndex, token.endIndex); if (token.type === 'keyword' && ['const', 'let', 'var', 'function', 'class'].includes(tokenText)) { const nextToken = this.findNextMeaningfulToken(i); if (nextToken && (nextToken.type === 'variable' || nextToken.type === 'function')) { const name = this.text.substring(nextToken.startIndex, nextToken.endIndex); if (!this.declarations.has(name)) this.declarations.set(name, { index: nextToken.startIndex, type: tokenText }); } } }
     }
-    findDiagnostics() { const regex = /console\.log/g; let match; while((match = regex.exec(this.text))) { this.diagnostics.push({ startIndex: match.index, endIndex: match.index + 11, message: 'デバッグ用のconsole.logが残っています。', severity: 'warning' }); } }
+    findDiagnostics() { this.diagnostics = []; const regex = /console\.log/g; let match; while((match = regex.exec(this.text))) { this.diagnostics.push({ startIndex: match.index, endIndex: match.index + 11, message: 'デバッグ用のconsole.logが残っています。', severity: 'warning' }); } }
 
-    getCharType(char) {
-        if (/\s/.test(char)) return 'space';
-        if (/[\w$]/.test(char)) return 'word';
-        return 'symbol';
-    }
+    getCharType(char) { if (/\s/.test(char)) return 'space'; if (/[\w$]/.test(char)) return 'word'; return 'symbol'; }
     
-    computeWordBoundaries() {
-        this.wordBoundaries = [0];
-        if (this.text.length === 0) return;
+    computeWordBoundaries() { this.wordBoundaries = [0]; if (this.text.length === 0) return; let lastType = this.getCharType(this.text[0]); for (let i = 1; i < this.text.length; i++) { const currentType = this.getCharType(this.text[i]); if (currentType !== lastType) { this.wordBoundaries.push(i); lastType = currentType; } } }
 
-        let lastType = this.getCharType(this.text[0]);
-        for (let i = 1; i < this.text.length; i++) {
-            const currentType = this.getCharType(this.text[i]);
-            if (currentType !== lastType) {
-                this.wordBoundaries.push(i);
-                lastType = currentType;
-            }
-        }
-    }
-
-    getNextWordBoundary(index, direction) {
-        if (direction === 'right') {
-            for (const boundary of this.wordBoundaries) {
-                if (boundary > index) {
-                    return boundary;
-                }
-            }
-            return this.text.length;
-        } else { // left
-            for (let i = this.wordBoundaries.length - 1; i >= 0; i--) {
-                const boundary = this.wordBoundaries[i];
-                if (boundary < index) {
-                    return boundary;
-                }
-            }
-            return 0;
-        }
-    }
+    getNextWordBoundary(index, direction) { if (direction === 'right') { for (const boundary of this.wordBoundaries) { if (boundary > index) return boundary; } return this.text.length; } else { for (let i = this.wordBoundaries.length - 1; i >= 0; i--) { const boundary = this.wordBoundaries[i]; if (boundary < index) return boundary; } return 0; } }
     
     getHoverInfoAt(index) { const wordInfo = this.findWordAt(index); if (!wordInfo) return null; if (wordInfo.word === 'console') return { content: 'Console API へのアクセスを提供します。' }; if (wordInfo.word === 'greet' && this.declarations.has('greet')) return { content: 'function greet(name: string): string\n\n指定された名前で挨拶を返します。' }; return null; }
     getDefinitionLocationAt(index) { const wordInfo = this.findWordAt(index); if (!wordInfo) return null; const declaration = this.declarations.get(wordInfo.word); if (declaration) return { targetIndex: declaration.index }; return null; }
     getOccurrencesAt(index) { const wordInfo = this.findWordAt(index); if (!wordInfo || KEYWORDS.has(wordInfo.word)) return []; const occurrences = []; const wordRegex = new RegExp(`\\b${wordInfo.word}\\b`, 'g'); let match; while ((match = wordRegex.exec(this.text))) { occurrences.push({ startIndex: match.index, endIndex: match.index + match[0].length }); } return occurrences; }
     
-    getCompletions(index) {
-        let suggestions = [];
-        const prefixInfo = this.getPrefixAt(index);
-        const prefix = prefixInfo ? prefixInfo.prefix.toLowerCase() : '';
-
-        KEYWORDS.forEach(kw => suggestions.push({ label: kw, type: 'keyword' }));
-        this.declarations.forEach((val, key) => suggestions.push({ label: key, type: val.type, detail: val.type }));
-        SNIPPETS.forEach(snip => suggestions.push(snip));
-        
-        if (!prefix) return suggestions;
-
-        return suggestions.filter(s => {
-            const label = s.label.toLowerCase();
-            if (s.type === 'snippet') {
-                const text = (s.insertText || '').toLowerCase();
-                return label.startsWith(prefix) || text.startsWith(prefix);
-            }
-            return label.startsWith(prefix);
-        });
+    getCompletions(index) { let suggestions = []; const prefixInfo = this.getPrefixAt(index); const prefix = prefixInfo ? prefixInfo.prefix.toLowerCase() : ''; KEYWORDS.forEach(kw => suggestions.push({ label: kw, type: 'keyword' })); this.declarations.forEach((val, key) => suggestions.push({ label: key, type: val.type, detail: val.type })); SNIPPETS.forEach(snip => suggestions.push(snip)); if (!prefix) return suggestions; return suggestions.filter(s => { const label = s.label.toLowerCase(); if (s.type === 'snippet') { const text = (s.insertText || '').toLowerCase(); return label.startsWith(prefix) || text.startsWith(prefix); } return label.startsWith(prefix); }); }
+    
+    getIndentationAt(index) {
+        const lineStart = this.text.lastIndexOf('\n', index - 1) + 1;
+        const line = this.text.substring(lineStart, index);
+        const currentIndent = line.match(/^\s*/)[0];
+        const trimmedLine = line.trim();
+        const charBefore = this.text[index - 1] || '\n';
+        const charAfter = this.text[index] || '\n';
+        if ((charBefore === '{' && charAfter === '}') || (charBefore === '(' && charAfter === ')')) {
+            const newIndent = currentIndent + '    ';
+            return { textToInsert: `\n${newIndent}\n${currentIndent}`, cursorOffset: newIndent.length + 1 };
+        }
+        if (trimmedLine.endsWith('{') || trimmedLine.endsWith('(') || trimmedLine.endsWith('[')) {
+            return { textToInsert: '\n' + currentIndent + '    ', cursorOffset: currentIndent.length + 5 };
+        }
+        return { textToInsert: '\n' + currentIndent, cursorOffset: currentIndent.length + 1 };
     }
+
+    toggleCommentAt(selectionStart, selectionEnd) { const lineStartIndex = this.text.lastIndexOf('\n', selectionStart - 1) + 1; let lineEndIndex = this.text.indexOf('\n', selectionEnd); if (lineEndIndex === -1) lineEndIndex = this.text.length; const selectedLinesText = this.text.substring(lineStartIndex, lineEndIndex); const lines = selectedLinesText.split('\n'); const isAllCommented = lines.filter(line => line.trim() !== '').every(line => line.trim().startsWith('//')); let newLines, selectionDelta = 0; if (isAllCommented) { newLines = lines.map(line => { const match = line.match(/^(\s*)\/\/\s?(.*)/); if (match) { selectionDelta -= 3; return match[1] + match[2]; } return line; }); } else { const minIndent = Math.min(...lines.filter(l => l.trim()).map(l => l.match(/^\s*/)[0].length)); const indent = ' '.repeat(minIndent); newLines = lines.map(line => { if (line.trim() === '') return line; selectionDelta += 2; return indent + '//' + line.substring(minIndent); }); } const newText = this.text.substring(0, lineStartIndex) + newLines.join('\n') + this.text.substring(lineEndIndex); return { newText, newSelectionStart: selectionStart, newSelectionEnd: selectionEnd + selectionDelta }; }
     
     isAtEnd(offset = this.offset) { return offset >= this.text.length; }
     peek(offset = this.offset) { return this.isAtEnd(offset) ? '\0' : this.text.charAt(offset); }
@@ -158,5 +116,7 @@ self.onmessage = (event) => {
         case 'getOccurrences': if (analyzer) self.postMessage({ type, payload: analyzer.getOccurrencesAt(payload.index), requestId }); break;
         case 'getNextWordBoundary': if (analyzer) self.postMessage({ type, payload: { targetIndex: analyzer.getNextWordBoundary(payload.index, payload.direction) }, requestId }); break;
         case 'getCompletions': if(analyzer) self.postMessage({ type, payload: analyzer.getCompletions(payload.index), requestId}); break;
+        case 'getIndentation': if (analyzer) self.postMessage({ type, payload: analyzer.getIndentationAt(payload.index), requestId }); break;
+        case 'toggleComment': if (analyzer) self.postMessage({ type, payload: analyzer.toggleCommentAt(payload.selectionStart, payload.selectionEnd), requestId }); break;
     }
 };

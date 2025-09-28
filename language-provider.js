@@ -23,12 +23,6 @@ class BaseLanguageProvider {
         };
     }
 
-    /**
-     * Workerにメッセージを送信し、対応する応答をPromiseとして待機する。
-     * @param {string} type - メッセージのタイプ
-     * @param {*} [payload] - 送信するデータ
-     * @returns {Promise<any>}
-     */
     _postMessageAndWaitForResult(type, payload) {
         return new Promise((resolve) => {
             const requestId = Date.now() + Math.random();
@@ -37,39 +31,13 @@ class BaseLanguageProvider {
         });
     }
 
-    /**
-     * 解析結果の更新を受け取るためのコールバックを登録する。
-     * @param {function(object): void} callback 
-     */
-    onUpdate(callback) {
-        this.updateCallback = callback;
-    }
-
-    /**
-     * Workerに現在のテキスト内容を通知する。
-     * @param {string} text 
-     */
-    updateText(text) {
-        this.worker.postMessage({ type: 'updateText', payload: text });
-    }
-
-    getHoverInfo(index) {
-        return this._postMessageAndWaitForResult('getHoverInfo', { index });
-    }
-
-    getDefinitionLocation(index) {
-        return this._postMessageAndWaitForResult('getDefinitionLocation', { index });
-    }
-
-    getOccurrences(index) {
-        return this._postMessageAndWaitForResult('getOccurrences', { index });
-    }
-
-    getNextWordBoundary(index, direction) {
-        return this._postMessageAndWaitForResult('getNextWordBoundary', { index, direction });
-    }
-
-    getCompletions(index) {
-        return this._postMessageAndWaitForResult('getCompletions', { index });
-    }
+    onUpdate(callback) { this.updateCallback = callback; }
+    updateText(text) { this.worker.postMessage({ type: 'updateText', payload: text }); }
+    getHoverInfo(index) { return this._postMessageAndWaitForResult('getHoverInfo', { index }); }
+    getDefinitionLocation(index) { return this._postMessageAndWaitForResult('getDefinitionLocation', { index }); }
+    getOccurrences(index) { return this._postMessageAndWaitForResult('getOccurrences', { index }); }
+    getNextWordBoundary(index, direction) { return this._postMessageAndWaitForResult('getNextWordBoundary', { index, direction }); }
+    getCompletions(index) { return this._postMessageAndWaitForResult('getCompletions', { index }); }
+    getIndentation(index) { return this._postMessageAndWaitForResult('getIndentation', { index }); }
+    toggleComment(selectionStart, selectionEnd) { return this._postMessageAndWaitForResult('toggleComment', { selectionStart, selectionEnd }); }
 }
