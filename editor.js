@@ -1,0 +1,230 @@
+/**
+ * @typedef {object} Token - シンタックスハイライト用のトークン情報
+ * @property {number} startIndex
+ * @property {number} endIndex
+ * @property {string} type - 'keyword', 'string', 'comment', 'function' など
+ */
+/**
+ * @typedef {object} Diagnostic - 診断情報（エラーや警告）
+ * @property {number} startIndex
+ * @property {number} endIndex
+ * @property {string} message
+ * @property {'error' | 'warning'} severity
+ */
+/**
+ * @typedef {object} HoverInfo - ホバー時に表示する情報
+ * @property {string} content - 表示するテキスト
+ * @property {number} startIndex
+ * @property {number} endIndex
+ */
+/**
+ * @typedef {object} DefinitionLocation - 定義位置情報
+ * @property {number} targetIndex - ジャンプ先の文字インデックス
+ */
+/**
+ * @typedef {object} LanguageConfiguration - 言語ごとの設定
+ * @property {boolean} highlightWhitespace - 空白文字をハイライトするか
+ * @property {boolean} highlightIndent - インデントをハイライトするか
+ */
+
+class CanvasEditor {
+    constructor(canvas, textarea, popup) {
+        this.canvas = canvas; this.textarea = textarea; this.popup = popup; this.ctx = canvas.getContext('2d');
+        this.font = '22px "Space Mono", "Noto Sans JP", monospace'; this.padding = 10; this.lineHeight = 30;
+        this.h_width = 0; this.z_width = 0; this.charWidthCache = new Map();
+        
+        this.colors = {
+            background: '#282c34', text: '#abb2bf', cursor: '#528bff',
+            selection: 'rgba(58, 67, 88, 0.8)', imeUnderline: '#abb2bf',
+            indentation: ['rgba(255, 255, 255, 0.07)', 'rgba(255, 255, 255, 0.04)'],
+            trailingSpace: 'rgba(255, 82, 82, 0.4)',
+            whitespaceSymbol: '#4a505e', overwriteCursor: 'rgba(82, 139, 255, 0.5)',
+            errorUnderline: 'red',
+            tokenColors: {
+                'keyword': '#c678dd', 'string': '#98c379', 'comment': '#5c6370',
+                'function': '#61afef', 'number': '#d19a66', 'default': '#abb2bf'
+            }
+        };
+
+        this.text = 'function greet(name) {\n    // "console.log" は定義ジャンプ(F12)の対象です\n    console.log(`Hello, ${name}!`);\n}\n\ngreet("World");';
+        this.lines = []; this.cursor = 0; this.selectionStart = 0; this.selectionEnd = 0;
+        this.isFocused = false; this.isComposing = false; this.compositionText = ''; this.isDragging = false;
+        this.scrollX = 0; this.scrollY = 0; this.cursorBlinkState = true; this.lastBlinkTime = 0; this.blinkInterval = 500;
+        this.preferredCursorX = -1; this.isOverwriteMode = false; this.visibleLines = 0;
+        this.undoStack = []; this.redoStack = [];
+
+        /** @type {BaseLanguageProvider | null} */
+        this.languageProvider = null;
+        this.tokens = [];
+        this.diagnostics = [];
+        this.langConfig = { highlightWhitespace: true, highlightIndent: true };
+
+        this.hoverTimeout = null;
+
+        this.init();
+    }
+
+    init() { this.ctx.font = this.font; this.h_width = this.ctx.measureText('W').width; this.z_width = this.h_width * 2; this.visibleLines = Math.floor((this.canvas.height - this.padding * 2) / this.lineHeight); this.updateLines(); this.bindEvents(); requestAnimationFrame(this.renderLoop.bind(this)); }
+    
+    registerLanguageProvider(languageId, provider) {
+        this.languageProvider = provider;
+        this.languageProvider.onUpdate((data) => {
+            this.tokens = data.tokens || [];
+            this.diagnostics = data.diagnostics || [];
+            this.langConfig = { ...this.langConfig, ...data.config };
+        });
+        this.updateText(this.text);
+    }
+    
+    updateText(text) {
+        if (this.languageProvider) {
+            this.languageProvider.updateText(text);
+        }
+    }
+
+    getCharWidth(char) { if (this.charWidthCache.has(char)) { return this.charWidthCache.get(char); } const isHalfWidth = (char.charCodeAt(0) >= 0x0020 && char.charCodeAt(0) <= 0x007e) || (char.charCodeAt(0) >= 0xff61 && char.charCodeAt(0) <= 0xff9f); const width = isHalfWidth ? this.h_width : this.z_width; this.charWidthCache.set(char, width); return width; }
+    measureText(text) { let totalWidth = 0; for (const char of text) { totalWidth += this.getCharWidth(char); } return totalWidth; }
+    
+    bindEvents() { this.canvas.addEventListener('mousedown', this.onMouseDown.bind(this)); this.canvas.addEventListener('mousemove', this.onMouseMove.bind(this)); this.canvas.addEventListener('mouseleave', () => { clearTimeout(this.hoverTimeout); this.hidePopup(); }); window.addEventListener('mouseup', this.onMouseUp.bind(this)); this.canvas.addEventListener('wheel', this.onWheel.bind(this)); document.addEventListener('click', (e) => { if (e.target !== this.canvas) this.blur(); }); this.textarea.addEventListener('input', this.onInput.bind(this)); this.textarea.addEventListener('keydown', this.onKeydown.bind(this)); this.textarea.addEventListener('compositionstart', () => { this.isComposing = true; }); this.textarea.addEventListener('compositionupdate', (e) => { this.compositionText = e.data; }); this.textarea.addEventListener('compositionend', (e) => { this.isComposing = false; this.compositionText = ''; this.onInput({target: {value: e.data}}); }); this.textarea.addEventListener('copy', this.onCopy.bind(this)); this.textarea.addEventListener('paste', this.onPaste.bind(this)); this.textarea.addEventListener('cut', this.onCut.bind(this)); }
+    onCopy(e) { e.preventDefault(); if (!this.hasSelection()) return; const { start, end } = this.getSelectionRange(); const selectedText = this.text.substring(start, end); e.clipboardData.setData('text/plain', selectedText); }
+    onPaste(e) { e.preventDefault(); const pasteText = e.clipboardData.getData('text/plain'); if (pasteText) { this.insertText(pasteText); } }
+    onCut(e) { e.preventDefault(); if (!this.hasSelection()) return; this.onCopy(e); this.deleteSelection(); }
+    focus() { if(this.isFocused) return; this.isFocused = true; this.textarea.focus(); this.resetCursorBlink(); }
+    blur() { this.isFocused = false; this.textarea.blur(); this.hidePopup(); }
+    onMouseDown(e) { e.preventDefault(); this.focus(); this.isDragging = true; const pos = this.getCursorIndexFromCoords(e.offsetX, e.offsetY); this.setCursor(pos); this.selectionStart = this.cursor; this.selectionEnd = this.cursor; }
+    
+    onMouseMove(e) {
+        if (this.isDragging) {
+            const pos = this.getCursorIndexFromCoords(e.offsetX, e.offsetY);
+            this.setCursor(pos); this.selectionEnd = this.cursor;
+        } else {
+            clearTimeout(this.hoverTimeout);
+            this.hidePopup();
+            this.hoverTimeout = setTimeout(() => this.handleHover(e), 500);
+        }
+    }
+
+    async handleHover(e) {
+        if (!this.languageProvider) return;
+        const pos = this.getCursorIndexFromCoords(e.offsetX, e.offsetY);
+        const hoverInfo = await this.languageProvider.getHoverInfo(pos);
+        if (hoverInfo && hoverInfo.content) {
+            this.showPopup(hoverInfo.content, e.clientX, e.clientY);
+        } else {
+            this.hidePopup();
+        }
+    }
+
+    showPopup(content, x, y) { this.popup.style.display = 'block'; this.popup.textContent = content; this.popup.style.left = `${x + 10}px`; this.popup.style.top = `${y + 10}px`; }
+    hidePopup() { this.popup.style.display = 'none'; }
+    
+    onMouseUp() { this.isDragging = false; this.preferredCursorX = -1; }
+    onWheel(e) { e.preventDefault(); const newScrollY = this.scrollY + e.deltaY; const maxScrollY = Math.max(0, this.lines.length * this.lineHeight - this.canvas.height + this.padding * 2); this.scrollY = Math.max(0, Math.min(newScrollY, maxScrollY)); }
+    onInput(e) { if (this.isComposing) return; const newText = e.target.value; if(newText){ this.insertText(newText); this.textarea.value = ''; } }
+    
+    async onKeydown(e) {
+        if (this.isComposing) return;
+        if ((e.ctrlKey || e.metaKey)) { switch (e.key.toLowerCase()) { case 'a': e.preventDefault(); this.selectionStart = 0; this.selectionEnd = this.text.length; this.setCursor(this.text.length); return; case 'z': e.preventDefault(); this.undo(); return; case 'y': e.preventDefault(); this.redo(); return; } return; }
+        
+        if (e.key === 'F12') {
+            e.preventDefault();
+            if (this.languageProvider) {
+                const location = await this.languageProvider.getDefinitionLocation(this.cursor);
+                if (location) { this.setCursor(location.targetIndex); this.selectionStart = this.selectionEnd = this.cursor; }
+            }
+            return;
+        }
+
+        switch (e.key) { case 'ArrowLeft': case 'ArrowRight': case 'ArrowUp': case 'ArrowDown': e.preventDefault(); this.handleArrowKeys(e); break; case 'Home': case 'End': e.preventDefault(); this.handleHomeEndKeys(e); break; case 'PageUp': case 'PageDown': e.preventDefault(); this.handlePageKeys(e); break; case 'Insert': e.preventDefault(); this.isOverwriteMode = !this.isOverwriteMode; this.resetCursorBlink(); break; case 'Backspace': e.preventDefault(); if (this.hasSelection()) { this.deleteSelection(); } else if (this.cursor > 0) { this.recordHistory(); const prevCursor = this.cursor - 1; this.text = this.text.slice(0, prevCursor) + this.text.slice(this.cursor); this.setCursor(prevCursor); this.selectionStart = this.selectionEnd = this.cursor; this.updateLines(); this.updateText(this.text); } break; case 'Delete': e.preventDefault(); if (this.hasSelection()) { this.deleteSelection(); } else if (this.cursor < this.text.length) { this.recordHistory(); this.text = this.text.slice(0, this.cursor) + this.text.slice(this.cursor + 1); this.updateLines(); this.updateText(this.text); } break; case 'Enter': e.preventDefault(); this.insertText('\n'); break; case 'Tab': e.preventDefault(); this.insertText('\t'); break; default: this.preferredCursorX = -1; break; }
+    }
+    
+    render() {
+        this.ctx.fillStyle = this.colors.background; this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height); this.ctx.save(); this.ctx.translate(-this.scrollX, -this.scrollY);
+        const selection = this.getSelectionRange();
+        const cursorPosition = this.getPosFromIndex(this.cursor);
+        
+        this.lines.forEach((line, i) => { const y = this.padding + i * this.lineHeight; if (y + this.lineHeight < this.scrollY || y > this.scrollY + this.canvas.height) return;
+            const drawLineContent = (text, startX, textY, lineStartIndexOffset = 0) => {
+                let currentX = startX;
+                for (let j = 0; j < text.length; j++) {
+                    const char = text[j]; const charWidth = this.getCharWidth(char); const charIndex = this.getIndexFromPos(i, 0) + lineStartIndexOffset + j;
+                    if (charIndex >= selection.start && charIndex < selection.end) { this.ctx.fillStyle = this.colors.selection; this.ctx.fillRect(currentX, y, charWidth, this.lineHeight); }
+                    const token = this.tokens.find(t => charIndex >= t.startIndex && charIndex < t.endIndex);
+                    this.ctx.fillStyle = token ? this.colors.tokenColors[token.type] || this.colors.tokenColors.default : this.colors.text;
+                    this.ctx.fillText(char, currentX, textY);
+                    currentX += charWidth;
+                }
+                return currentX;
+            };
+
+            const textY = y + this.lineHeight / 2;
+            
+            if (this.isFocused && this.isComposing && cursorPosition.row === i) {
+                const lineBefore = line.substring(0, cursorPosition.col);
+                const lineAfter = line.substring(cursorPosition.col);
+                let currentX = drawLineContent(lineBefore, this.padding, textY);
+                const imeStartX = currentX;
+                this.ctx.fillStyle = this.colors.text;
+                let imeCurrentX = currentX;
+                for (const char of this.compositionText) { this.ctx.fillText(char, imeCurrentX, textY); imeCurrentX += this.getCharWidth(char); }
+                const compositionWidth = this.measureText(this.compositionText);
+                this.ctx.strokeStyle = this.colors.imeUnderline;
+                this.ctx.lineWidth = 1;
+                this.ctx.beginPath();
+                this.ctx.moveTo(imeStartX, y + this.lineHeight - 2);
+                this.ctx.lineTo(imeStartX + compositionWidth, y + this.lineHeight - 2);
+                this.ctx.stroke();
+                currentX += compositionWidth;
+                drawLineContent(lineAfter, currentX, textY, cursorPosition.col);
+            } else {
+                drawLineContent(line, this.padding, textY);
+            }
+            
+            this.diagnostics.forEach(diag => {
+                const lineStartIndex = this.getIndexFromPos(i, 0);
+                const lineEndIndex = lineStartIndex + line.length;
+                if (diag.startIndex < lineEndIndex && diag.endIndex > lineStartIndex) {
+                    const start = Math.max(diag.startIndex, lineStartIndex);
+                    const end = Math.min(diag.endIndex, lineEndIndex);
+                    const textBefore = line.substring(0, start - lineStartIndex);
+                    const textDiag = line.substring(start - lineStartIndex, end - lineStartIndex);
+                    const x = this.padding + this.measureText(textBefore);
+                    const width = this.measureText(textDiag);
+                    this.ctx.strokeStyle = this.colors.errorUnderline;
+                    this.ctx.lineWidth = 1;
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(x, y + this.lineHeight - 2);
+                    this.ctx.lineTo(x + width, y + this.lineHeight - 2);
+                    this.ctx.stroke();
+                }
+            });
+        });
+        if (this.isFocused && !this.isComposing) { const cursorPos = this.getCursorCoords(this.cursor); if (this.isOverwriteMode) { const char = this.text[this.cursor] || ' '; const charWidth = this.getCharWidth(char); this.ctx.fillStyle = this.colors.overwriteCursor; this.ctx.fillRect(cursorPos.x, cursorPos.y, charWidth, this.lineHeight); } else if (this.cursorBlinkState && !this.hasSelection()) { this.ctx.fillStyle = this.colors.cursor; this.ctx.fillRect(cursorPos.x, cursorPos.y, 2, this.lineHeight); } }
+        this.ctx.restore();
+    }
+    
+    insertText(newText) { this.recordHistory(); if (this.hasSelection()) { this.deleteSelection(false); } if (this.isOverwriteMode && this.cursor < this.text.length && newText !== '\n') { const end = this.cursor + newText.length; this.text = this.text.slice(0, this.cursor) + newText + this.text.slice(end); this.setCursor(this.cursor + newText.length); } else { const prevCursor = this.cursor; this.text = this.text.slice(0, prevCursor) + newText + this.text.slice(prevCursor); this.setCursor(prevCursor + newText.length); } this.selectionStart = this.selectionEnd = this.cursor; this.updateLines(); this.updateText(this.text); }
+    deleteSelection(history = true) { if (history) { this.recordHistory(); } if(!this.hasSelection()) return; const { start } = this.getSelectionRange(); this.text = this.text.slice(0, start) + this.text.slice(this.getSelectionRange().end); this.setCursor(start); this.selectionStart = this.selectionEnd = this.cursor; this.updateLines(); this.updateText(this.text); }
+    
+    setCursor(index, resetX = true) { this.cursor = Math.max(0, Math.min(this.text.length, index)); if (resetX) { this.preferredCursorX = -1; } this.scrollToCursor(); this.resetCursorBlink(); }
+    handleArrowKeys(e) { if (this.hasSelection() && !e.shiftKey) { const selection = this.getSelectionRange(); switch (e.key) { case 'ArrowLeft': case 'ArrowUp': this.setCursor(selection.start); break; case 'ArrowRight': case 'ArrowDown': this.setCursor(selection.end); break; } this.selectionStart = this.selectionEnd = this.cursor; return; } switch (e.key) { case 'ArrowLeft': if (this.cursor > 0) this.setCursor(this.cursor - 1); break; case 'ArrowRight': if (this.cursor < this.text.length) this.setCursor(this.cursor + 1); break; case 'ArrowUp': this.moveCursorLine(-1); break; case 'ArrowDown': this.moveCursorLine(1); break; } if (!e.shiftKey) { this.selectionStart = this.selectionEnd = this.cursor; } else { this.selectionEnd = this.cursor; } }
+    moveCursorLine(direction) { const { row, col } = this.getPosFromIndex(this.cursor); if (this.preferredCursorX < 0) { this.preferredCursorX = this.measureText(this.lines[row].substring(0, col)); } const newRow = Math.max(0, Math.min(this.lines.length - 1, row + direction)); if (newRow === row) { this.setCursor(direction < 0 ? 0 : this.text.length); return; } const targetLine = this.lines[newRow]; let minDelta = Infinity; let newCol = 0; for (let i = 0; i <= targetLine.length; i++) { const w = this.measureText(targetLine.substring(0, i)); const delta = Math.abs(this.preferredCursorX - w); if (delta < minDelta) { minDelta = delta; newCol = i; } else { break; } } this.setCursor(this.getIndexFromPos(newRow, newCol), false); }
+    handleHomeEndKeys(e) { const { row, col } = this.getPosFromIndex(this.cursor); const line = this.lines[row]; let newCol = col; if (e.key === 'Home') { const indentEndCol = line.match(/^\s*/)[0].length; if (col !== indentEndCol && indentEndCol !== line.length) { newCol = indentEndCol; } else { newCol = 0; } } else { newCol = line.length; } this.setCursor(this.getIndexFromPos(row, newCol)); if (!e.shiftKey) { this.selectionStart = this.selectionEnd = this.cursor; } else { this.selectionEnd = this.cursor; } }
+    handlePageKeys(e) { const direction = e.key === 'PageUp' ? -1 : 1; const { row } = this.getPosFromIndex(this.cursor); if (this.preferredCursorX < 0) { this.preferredCursorX = this.measureText(this.lines[row].substring(0, this.getPosFromIndex(this.cursor).col)); } const newRow = Math.max(0, Math.min(this.lines.length - 1, row + direction * this.visibleLines)); const targetLine = this.lines[newRow]; let minDelta = Infinity; let newCol = 0; for (let i = 0; i <= targetLine.length; i++) { const w = this.measureText(targetLine.substring(0, i)); const delta = Math.abs(this.preferredCursorX - w); if (delta < minDelta) { minDelta = delta; newCol = i; } else { break; } } this.setCursor(this.getIndexFromPos(newRow, newCol), false); if (!e.shiftKey) { this.selectionStart = this.selectionEnd = this.cursor; } else { this.selectionEnd = this.cursor; } }
+    scrollToCursor() { const { x: cursorX, y: cursorY } = this.getCursorCoords(this.cursor); const visibleTop = this.scrollY; const visibleBottom = this.scrollY + this.canvas.height; if (cursorY < visibleTop) { this.scrollY = cursorY; } else if (cursorY + this.lineHeight > visibleBottom) { this.scrollY = cursorY + this.lineHeight - this.canvas.height; } const visibleLeft = this.scrollX + this.padding; const visibleRight = this.scrollX + this.canvas.width - this.padding; if (cursorX < visibleLeft) { this.scrollX = cursorX - this.padding; } else if (cursorX > visibleRight) { this.scrollX = cursorX - this.canvas.width + this.padding; } this.scrollX = Math.max(0, this.scrollX); }
+    resetCursorBlink() { this.cursorBlinkState = true; this.lastBlinkTime = performance.now(); }
+    renderLoop(timestamp) { this.updateCursorBlink(timestamp); this.render(); this.updateTextareaPosition(); requestAnimationFrame(this.renderLoop.bind(this)); }
+    updateCursorBlink(timestamp) { if (!this.isFocused || this.isOverwriteMode) return; if (timestamp - this.lastBlinkTime > this.blinkInterval) { this.cursorBlinkState = !this.cursorBlinkState; this.lastBlinkTime = timestamp; }}
+    updateLines() { this.lines = this.text.split('\n'); }
+    hasSelection() { return this.selectionStart !== this.selectionEnd; }
+    getSelectionRange() { return { start: Math.min(this.selectionStart, this.selectionEnd), end: Math.max(this.selectionStart, this.selectionEnd) }; }
+    getPosFromIndex(index) { let count = 0; for(let i=0; i<this.lines.length; i++){ const lineLength = this.lines[i].length + 1; if(count + lineLength > index){ return { row: i, col: index - count }; } count += lineLength; } return { row: this.lines.length - 1, col: this.lines[this.lines.length - 1].length }; }
+    getIndexFromPos(row, col) { let index = 0; for(let i=0; i<row; i++){ index += this.lines[i].length + 1; } return index + col; }
+    getCursorCoords(index) { const { row, col } = this.getPosFromIndex(this.cursor); const textBefore = this.lines[row].substring(0, col); const x = this.padding + this.measureText(textBefore); const y = this.padding + row * this.lineHeight; return { x, y }; }
+    getCursorIndexFromCoords(x, y) { const logicalX = x + this.scrollX; const logicalY = y + this.scrollY; const row = Math.max(0, Math.min(this.lines.length - 1, Math.floor((logicalY - this.padding) / this.lineHeight))); const line = this.lines[row]; let minDelta = Infinity; let col = 0; for (let i = 0; i <= line.length; i++) { const w = this.measureText(line.substring(0, i)); const delta = Math.abs(logicalX - (this.padding + w)); if (delta < minDelta) { minDelta = delta; col = i; } } return this.getIndexFromPos(row, col); }
+    updateTextareaPosition() { if(!this.isFocused) return; const coords = this.getCursorCoords(this.cursor); this.textarea.style.left = `${coords.x - this.scrollX}px`; this.textarea.style.top = `${coords.y - this.scrollY}px`; }
+    recordHistory() { this.redoStack = []; const state = { text: this.text, cursor: this.cursor, selectionStart: this.selectionStart, selectionEnd: this.selectionEnd }; const lastState = this.undoStack[this.undoStack.length - 1]; if (lastState && lastState.text === state.text && lastState.cursor === state.cursor) { return; } this.undoStack.push(state); if (this.undoStack.length > 100) { this.undoStack.shift(); } }
+    applyState(state) { if (!state) return; this.text = state.text; this.cursor = state.cursor; this.selectionStart = state.selectionStart; this.selectionEnd = state.selectionEnd; this.updateLines(); this.scrollToCursor(); this.resetCursorBlink(); this.updateText(this.text); }
+    undo() { if (this.undoStack.length === 0) return; const currentState = { text: this.text, cursor: this.cursor, selectionStart: this.selectionStart, selectionEnd: this.selectionEnd }; this.redoStack.push(currentState); const prevState = this.undoStack.pop(); this.applyState(prevState); }
+    redo() { if (this.redoStack.length === 0) return; const currentState = { text: this.text, cursor: this.cursor, selectionStart: this.selectionStart, selectionEnd: this.selectionEnd }; this.undoStack.push(currentState); const nextState = this.redoStack.pop(); this.applyState(nextState); }
+}
