@@ -122,5 +122,25 @@ self.onmessage = (event) => {
             }
             self.postMessage({ type: 'getDefinitionLocation', payload: target, requestId });
             break;
+        
+        case 'getOccurrences':
+            let occurrences = [];
+            const wordInfoOcc = findWordAt(textContent, payload.index);
+            
+            if (wordInfoOcc && wordInfoOcc.word) {
+                const keywords = new Set(['const', 'let', 'var', 'if', 'else', 'for', 'while', 'function', 'class', 'return', 'new', 'this', 'super', 'extends']);
+                if (!keywords.has(wordInfoOcc.word)) {
+                    const wordRegex = new RegExp(`\\b${wordInfoOcc.word}\\b`, 'g');
+                    let match;
+                    while (match = wordRegex.exec(textContent)) {
+                        occurrences.push({
+                            startIndex: match.index,
+                            endIndex: match.index + match[0].length
+                        });
+                    }
+                }
+            }
+            self.postMessage({ type: 'getOccurrences', payload: occurrences, requestId });
+            break;
     }
 };

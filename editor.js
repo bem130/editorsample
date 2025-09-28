@@ -36,6 +36,7 @@ class CanvasEditor {
         this.colors = {
             background: '#282c34', text: '#abb2bf', cursor: '#528bff',
             selection: 'rgba(58, 67, 88, 0.8)', imeUnderline: '#abb2bf',
+            occurrenceHighlight: 'rgba(92, 99, 112, 0.5)',
             indentation: ['rgba(255, 255, 255, 0.07)', 'rgba(255, 255, 255, 0.04)'],
             trailingSpace: 'rgba(255, 82, 82, 0.4)',
             fullWidthSpace: 'rgba(100, 150, 200, 0.2)',
@@ -61,6 +62,7 @@ class CanvasEditor {
         this.tokens = [];
         this.diagnostics = [];
         this.langConfig = { highlightWhitespace: false, highlightIndent: false };
+        this.highlightedOccurrences = [];
 
         this.hoverTimeout = null;
         this.lastHoverIndex = -1;
@@ -181,7 +183,7 @@ class CanvasEditor {
     showPopup(content, x, y) { this.popup.style.display = 'block'; this.popup.textContent = content; this.popup.style.left = `${x + 10}px`; this.popup.style.top = `${y + 10}px`; }
     hidePopup() { this.popup.style.display = 'none'; }
     
-    onMouseUp() { this.isDragging = false; this.preferredCursorX = -1; }
+    onMouseUp() { this.isDragging = false; this.preferredCursorX = -1; this.updateOccurrencesHighlight(); }
     onWheel(e) { e.preventDefault(); const newScrollY = this.scrollY + e.deltaY; const maxScrollY = Math.max(0, this.lines.length * this.lineHeight - this.canvas.height + this.padding * 2); this.scrollY = Math.max(0, Math.min(newScrollY, maxScrollY)); }
     onInput(e) { if (this.isComposing) return; const newText = e.target.value; if(newText){ this.insertText(newText); this.textarea.value = ''; } }
     
@@ -198,7 +200,7 @@ class CanvasEditor {
             return;
         }
 
-        switch (e.key) { case 'ArrowLeft': case 'ArrowRight': case 'ArrowUp': case 'ArrowDown': e.preventDefault(); this.handleArrowKeys(e); break; case 'Home': case 'End': e.preventDefault(); this.handleHomeEndKeys(e); break; case 'PageUp': case 'PageDown': e.preventDefault(); this.handlePageKeys(e); break; case 'Insert': e.preventDefault(); this.isOverwriteMode = !this.isOverwriteMode; this.resetCursorBlink(); break; case 'Backspace': e.preventDefault(); if (this.hasSelection()) { this.deleteSelection(); } else if (this.cursor > 0) { this.recordHistory(); const prevCursor = this.cursor - 1; this.text = this.text.slice(0, prevCursor) + this.text.slice(this.cursor); this.setCursor(prevCursor); this.selectionStart = this.selectionEnd = this.cursor; this.updateLines(); this.updateText(this.text); } break; case 'Delete': e.preventDefault(); if (this.hasSelection()) { this.deleteSelection(); } else if (this.cursor < this.text.length) { this.recordHistory(); this.text = this.text.slice(0, this.cursor) + this.text.slice(this.cursor + 1); this.updateLines(); this.updateText(this.text); } break; case 'Enter': e.preventDefault(); this.insertText('\n'); break; case 'Tab': e.preventDefault(); this.insertText('\t'); break; default: this.preferredCursorX = -1; break; }
+        switch (e.key) { case 'ArrowLeft': case 'ArrowRight': case 'ArrowUp': case 'ArrowDown': e.preventDefault(); this.handleArrowKeys(e); break; case 'Home': case 'End': e.preventDefault(); this.handleHomeEndKeys(e); break; case 'PageUp': case 'PageDown': e.preventDefault(); this.handlePageKeys(e); break; case 'Insert': e.preventDefault(); this.isOverwriteMode = !this.isOverwriteMode; this.resetCursorBlink(); break; case 'Backspace': e.preventDefault(); if (this.hasSelection()) { this.deleteSelection(); } else if (this.cursor > 0) { this.recordHistory(); const prevCursor = this.cursor - 1; this.text = this.text.slice(0, prevCursor) + this.text.slice(this.cursor); this.setCursor(prevCursor); this.selectionStart = this.selectionEnd = this.cursor; this.updateLines(); this.updateText(this.text); this.updateOccurrencesHighlight(); } break; case 'Delete': e.preventDefault(); if (this.hasSelection()) { this.deleteSelection(); } else if (this.cursor < this.text.length) { this.recordHistory(); this.text = this.text.slice(0, this.cursor) + this.text.slice(this.cursor + 1); this.updateLines(); this.updateText(this.text); this.updateOccurrencesHighlight(); } break; case 'Enter': e.preventDefault(); this.insertText('\n'); break; case 'Tab': e.preventDefault(); this.insertText('\t'); break; default: this.preferredCursorX = -1; break; }
     }
     
     render() {
@@ -219,6 +221,13 @@ class CanvasEditor {
                     const char = text[j]; const charWidth = this.getCharWidth(char); const charIndex = this.getIndexFromPos(i, 0) + lineStartIndexOffset + j;
                     const isTrailing = (charIndex - this.getIndexFromPos(i, 0)) >= lastNonSpaceIndex;
 
+                    // 0. 同じ変数ハイライト
+                    const isHighlightedOccurrence = this.highlightedOccurrences.some(occ => charIndex >= occ.startIndex && charIndex < occ.endIndex);
+                    if (isHighlightedOccurrence) {
+                        this.ctx.fillStyle = this.colors.occurrenceHighlight;
+                        this.ctx.fillRect(currentX, y, charWidth, this.lineHeight);
+                    }
+                    
                     // 1. 背景ハイライト
                     if (this.langConfig.highlightIndent && isLeading) {
                         if (char === ' ') { spaceCountInIndent++; this.ctx.fillStyle = this.colors.indentation[Math.floor((spaceCountInIndent - 1) / 4) % 2]; this.ctx.fillRect(currentX, y, charWidth, this.lineHeight); }
@@ -308,14 +317,26 @@ class CanvasEditor {
         this.ctx.restore();
     }
      
-    insertText(newText) { this.recordHistory(); if (this.hasSelection()) { this.deleteSelection(false); } if (this.isOverwriteMode && this.cursor < this.text.length && newText !== '\n') { const end = this.cursor + newText.length; this.text = this.text.slice(0, this.cursor) + newText + this.text.slice(end); this.setCursor(this.cursor + newText.length); } else { const prevCursor = this.cursor; this.text = this.text.slice(0, prevCursor) + newText + this.text.slice(prevCursor); this.setCursor(prevCursor + newText.length); } this.selectionStart = this.selectionEnd = this.cursor; this.updateLines(); this.updateText(this.text); }
-    deleteSelection(history = true) { if (history) { this.recordHistory(); } if(!this.hasSelection()) return; const { start } = this.getSelectionRange(); this.text = this.text.slice(0, start) + this.text.slice(this.getSelectionRange().end); this.setCursor(start); this.selectionStart = this.selectionEnd = this.cursor; this.updateLines(); this.updateText(this.text); }
+    insertText(newText) { this.recordHistory(); if (this.hasSelection()) { this.deleteSelection(false); } if (this.isOverwriteMode && this.cursor < this.text.length && newText !== '\n') { const end = this.cursor + newText.length; this.text = this.text.slice(0, this.cursor) + newText + this.text.slice(end); this.setCursor(this.cursor + newText.length); } else { const prevCursor = this.cursor; this.text = this.text.slice(0, prevCursor) + newText + this.text.slice(prevCursor); this.setCursor(prevCursor + newText.length); } this.selectionStart = this.selectionEnd = this.cursor; this.updateLines(); this.updateText(this.text); this.updateOccurrencesHighlight(); }
+    deleteSelection(history = true) { if (history) { this.recordHistory(); } if(!this.hasSelection()) return; const { start } = this.getSelectionRange(); this.text = this.text.slice(0, start) + this.text.slice(this.getSelectionRange().end); this.setCursor(start); this.selectionStart = this.selectionEnd = this.cursor; this.updateLines(); this.updateText(this.text); this.updateOccurrencesHighlight(); }
     
-    setCursor(index, resetX = true) { this.cursor = Math.max(0, Math.min(this.text.length, index)); if (resetX) { this.preferredCursorX = -1; } this.scrollToCursor(); this.resetCursorBlink(); }
-    handleArrowKeys(e) { if (this.hasSelection() && !e.shiftKey) { const selection = this.getSelectionRange(); switch (e.key) { case 'ArrowLeft': case 'ArrowUp': this.setCursor(selection.start); break; case 'ArrowRight': case 'ArrowDown': this.setCursor(selection.end); break; } this.selectionStart = this.selectionEnd = this.cursor; return; } switch (e.key) { case 'ArrowLeft': if (this.cursor > 0) this.setCursor(this.cursor - 1); break; case 'ArrowRight': if (this.cursor < this.text.length) this.setCursor(this.cursor + 1); break; case 'ArrowUp': this.moveCursorLine(-1); break; case 'ArrowDown': this.moveCursorLine(1); break; } if (!e.shiftKey) { this.selectionStart = this.selectionEnd = this.cursor; } else { this.selectionEnd = this.cursor; } }
+    setCursor(index, resetX = true) { this.cursor = Math.max(0, Math.min(this.text.length, index)); if (resetX) { this.preferredCursorX = -1; } this.scrollToCursor(); this.resetCursorBlink(); this.updateOccurrencesHighlight(); }
+    handleArrowKeys(e) { if (this.hasSelection() && !e.shiftKey) { const selection = this.getSelectionRange(); switch (e.key) { case 'ArrowLeft': case 'ArrowUp': this.setCursor(selection.start); break; case 'ArrowRight': case 'ArrowDown': this.setCursor(selection.end); break; } this.selectionStart = this.selectionEnd = this.cursor; return; } switch (e.key) { case 'ArrowLeft': if (this.cursor > 0) this.setCursor(this.cursor - 1); break; case 'ArrowRight': if (this.cursor < this.text.length) this.setCursor(this.cursor + 1); break; case 'ArrowUp': this.moveCursorLine(-1); break; case 'ArrowDown': this.moveCursorLine(1); break; } if (!e.shiftKey) { this.selectionStart = this.selectionEnd = this.cursor; } else { this.selectionEnd = this.cursor; this.updateOccurrencesHighlight(); } }
     moveCursorLine(direction) { const { row, col } = this.getPosFromIndex(this.cursor); if (this.preferredCursorX < 0) { this.preferredCursorX = this.measureText(this.lines[row].substring(0, col)); } const newRow = Math.max(0, Math.min(this.lines.length - 1, row + direction)); if (newRow === row) { this.setCursor(direction < 0 ? 0 : this.text.length); return; } const targetLine = this.lines[newRow]; let minDelta = Infinity; let newCol = 0; for (let i = 0; i <= targetLine.length; i++) { const w = this.measureText(targetLine.substring(0, i)); const delta = Math.abs(this.preferredCursorX - w); if (delta < minDelta) { minDelta = delta; newCol = i; } else { break; } } this.setCursor(this.getIndexFromPos(newRow, newCol), false); }
-    handleHomeEndKeys(e) { const { row, col } = this.getPosFromIndex(this.cursor); const line = this.lines[row]; let newCol = col; if (e.key === 'Home') { const indentEndCol = line.match(/^\s*/)[0].length; if (col !== indentEndCol && indentEndCol !== line.length) { newCol = indentEndCol; } else { newCol = 0; } } else { newCol = line.length; } this.setCursor(this.getIndexFromPos(row, newCol)); if (!e.shiftKey) { this.selectionStart = this.selectionEnd = this.cursor; } else { this.selectionEnd = this.cursor; } }
-    handlePageKeys(e) { const direction = e.key === 'PageUp' ? -1 : 1; const { row } = this.getPosFromIndex(this.cursor); if (this.preferredCursorX < 0) { this.preferredCursorX = this.measureText(this.lines[row].substring(0, this.getPosFromIndex(this.cursor).col)); } const newRow = Math.max(0, Math.min(this.lines.length - 1, row + direction * this.visibleLines)); const targetLine = this.lines[newRow]; let minDelta = Infinity; let newCol = 0; for (let i = 0; i <= targetLine.length; i++) { const w = this.measureText(targetLine.substring(0, i)); const delta = Math.abs(this.preferredCursorX - w); if (delta < minDelta) { minDelta = delta; newCol = i; } else { break; } } this.setCursor(this.getIndexFromPos(newRow, newCol), false); if (!e.shiftKey) { this.selectionStart = this.selectionEnd = this.cursor; } else { this.selectionEnd = this.cursor; } }
+    handleHomeEndKeys(e) { const { row, col } = this.getPosFromIndex(this.cursor); const line = this.lines[row]; let newCol = col; if (e.key === 'Home') { const indentEndCol = line.match(/^\s*/)[0].length; if (col !== indentEndCol && indentEndCol !== line.length) { newCol = indentEndCol; } else { newCol = 0; } } else { newCol = line.length; } this.setCursor(this.getIndexFromPos(row, newCol)); if (!e.shiftKey) { this.selectionStart = this.selectionEnd = this.cursor; } else { this.selectionEnd = this.cursor; this.updateOccurrencesHighlight(); } }
+    handlePageKeys(e) { const direction = e.key === 'PageUp' ? -1 : 1; const { row } = this.getPosFromIndex(this.cursor); if (this.preferredCursorX < 0) { this.preferredCursorX = this.measureText(this.lines[row].substring(0, this.getPosFromIndex(this.cursor).col)); } const newRow = Math.max(0, Math.min(this.lines.length - 1, row + direction * this.visibleLines)); const targetLine = this.lines[newRow]; let minDelta = Infinity; let newCol = 0; for (let i = 0; i <= targetLine.length; i++) { const w = this.measureText(targetLine.substring(0, i)); const delta = Math.abs(this.preferredCursorX - w); if (delta < minDelta) { minDelta = delta; newCol = i; } else { break; } } this.setCursor(this.getIndexFromPos(newRow, newCol), false); if (!e.shiftKey) { this.selectionStart = this.selectionEnd = this.cursor; } else { this.selectionEnd = this.cursor; this.updateOccurrencesHighlight(); } }
+    
+    async updateOccurrencesHighlight() {
+        if (!this.languageProvider || this.hasSelection()) {
+            if (this.highlightedOccurrences.length > 0) {
+                this.highlightedOccurrences = [];
+            }
+            return;
+        }
+        const occurrences = await this.languageProvider.getOccurrences(this.cursor);
+        this.highlightedOccurrences = occurrences || [];
+    }
+
     scrollToCursor() {
         const rect = this.canvas.parentElement.getBoundingClientRect();
         const { x: cursorX, y: cursorY } = this.getCursorCoords(this.cursor);
@@ -347,7 +368,7 @@ class CanvasEditor {
     getCursorIndexFromCoords(x, y) { const logicalX = x + this.scrollX; const logicalY = y + this.scrollY; const row = Math.max(0, Math.min(this.lines.length - 1, Math.floor((logicalY - this.padding) / this.lineHeight))); const line = this.lines[row]; let minDelta = Infinity; let col = 0; for (let i = 0; i <= line.length; i++) { const w = this.measureText(line.substring(0, i)); const delta = Math.abs(logicalX - (this.padding + w)); if (delta < minDelta) { minDelta = delta; col = i; } } return this.getIndexFromPos(row, col); }
     updateTextareaPosition() { if(!this.isFocused) return; const coords = this.getCursorCoords(this.cursor); this.textarea.style.left = `${coords.x - this.scrollX}px`; this.textarea.style.top = `${coords.y - this.scrollY}px`; }
     recordHistory() { this.redoStack = []; const state = { text: this.text, cursor: this.cursor, selectionStart: this.selectionStart, selectionEnd: this.selectionEnd }; const lastState = this.undoStack[this.undoStack.length - 1]; if (lastState && lastState.text === state.text && lastState.cursor === state.cursor) { return; } this.undoStack.push(state); if (this.undoStack.length > 100) { this.undoStack.shift(); } }
-    applyState(state) { if (!state) return; this.text = state.text; this.cursor = state.cursor; this.selectionStart = state.selectionStart; this.selectionEnd = state.selectionEnd; this.updateLines(); this.scrollToCursor(); this.resetCursorBlink(); this.updateText(this.text); }
+    applyState(state) { if (!state) return; this.text = state.text; this.cursor = state.cursor; this.selectionStart = state.selectionStart; this.selectionEnd = state.selectionEnd; this.updateLines(); this.scrollToCursor(); this.resetCursorBlink(); this.updateText(this.text); this.updateOccurrencesHighlight(); }
     undo() { if (this.undoStack.length === 0) return; const currentState = { text: this.text, cursor: this.cursor, selectionStart: this.selectionStart, selectionEnd: this.selectionEnd }; this.redoStack.push(currentState); const prevState = this.undoStack.pop(); this.applyState(prevState); }
     redo() { if (this.redoStack.length === 0) return; const currentState = { text: this.text, cursor: this.cursor, selectionStart: this.selectionStart, selectionEnd: this.selectionEnd }; this.undoStack.push(currentState); const nextState = this.redoStack.pop(); this.applyState(nextState); }
 

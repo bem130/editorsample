@@ -60,4 +60,8 @@ class BaseLanguageProvider {
     getDefinitionLocation(index) {
         return this._postMessageAndWaitForResult('getDefinitionLocation', { index });
     }
+
+    getOccurrences(index) {
+        return this._postMessageAndWaitForResult('getOccurrences', { index });
+    }
 }
