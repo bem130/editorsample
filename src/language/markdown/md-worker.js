@@ -1,6 +1,6 @@
 // md-worker.js
 
-importScripts('js-analyzer.js');
+importScripts('../javascript/js-analyzer.js');
 
 class MarkdownAnalyzer {
     constructor(text) {

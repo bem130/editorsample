@@ -46,11 +46,3 @@
 
 *   **フロントエンド**: HTML5 Canvas, JavaScript (ES6+), Web Workers
 *   **外部ライブラリ**: なし（すべて標準のWeb APIで実装）
-
-## ファイル構成
-
-*   `index.html`: エディタのUIを構築するメインファイル。
-*   `editor.js`: エディタのフロントエンドロジック（レンダリング、イベント処理、UI管理）を担う`CanvasEditor`クラス。
-*   `js-worker.js`: JavaScriptのコード解析（トークン化、パース、診断、補完候補生成など）を行うWeb Worker。
-*   `language-provider.js`: エディタ本体とWeb Worker間の通信を抽象化し、言語機能を提供するための`BaseLanguageProvider`クラス。
-*   `js-provider.js`: `BaseLanguageProvider`を継承し、JavaScriptに特化した機能を提供するプロバイダ。
