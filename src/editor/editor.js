@@ -45,11 +45,17 @@
  * エディタの状態管理、コンポーネントの統括、および中心的なAPIを提供します。
  */
 class CanvasEditor {
-    constructor(canvas, textarea, domElements) {
+    constructor(canvas, textarea, domElements, options = {}) {
         // Core components
         this.canvas = canvas;
         this.textarea = textarea;
         this.ctx = canvas.getContext('2d');
+
+        // Options
+        this.options = {
+            autoRender: options.autoRender !== false,
+            bindEvents: options.bindEvents !== false
+        };
         
         // Geometry and Styling
         this.font = '22px "Space Mono", "Noto Sans JP", monospace';
@@ -109,8 +115,14 @@ class CanvasEditor {
         this.ctx.textBaseline = 'middle';
         this.geom.z_width = this.geom.h_width * 2;
         this.updateLines();
-        this.inputHandler.bindEvents();
-        requestAnimationFrame(this.renderer.renderLoop.bind(this.renderer));
+
+        if (this.options.bindEvents) {
+            this.inputHandler.bindEvents();
+        }
+
+        if (this.options.autoRender) {
+            requestAnimationFrame(this.renderer.renderLoop.bind(this.renderer));
+        }
     }
     
     registerLanguageProvider(languageId, provider) {

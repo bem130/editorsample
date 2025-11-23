@@ -21,10 +21,20 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     // エディタと言語プロバイダのインスタンス化
-    const domElements = { popup, problemsPanel, completionList };
-    const editor = new CanvasEditor(canvas, textarea, domElements);
     const jsProvider = new JavaScriptLanguageProvider();
     const mdProvider = new MarkdownLanguageProvider();
+    const { editor, setLanguage } = CanvasEditorLibrary.createCanvasEditor({
+        canvas,
+        textarea,
+        popup,
+        problemsPanel,
+        completionList,
+        languageProviders: {
+            javascript: jsProvider,
+            markdown: mdProvider
+        },
+        initialLanguage: 'javascript'
+    });
 
     // UIロジック
     function updateSampleOptions() {
@@ -45,10 +55,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const text = sampleTexts[lang][sampleKey];
 
         if (lang === 'javascript') {
-            editor.registerLanguageProvider('javascript', jsProvider);
+            setLanguage('javascript');
             problemsPanel.parentElement.style.display = 'flex';
         } else if (lang === 'markdown') {
-            editor.registerLanguageProvider('markdown', mdProvider);
+            setLanguage('markdown');
             problemsPanel.parentElement.style.display = 'none'; // Markdownでは問題パネルを非表示
         }
         
