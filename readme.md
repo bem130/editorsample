@@ -46,3 +46,33 @@
 
 *   **フロントエンド**: HTML5 Canvas, JavaScript (ES6+), Web Workers
 *   **外部ライブラリ**: なし（すべて標準のWeb APIで実装）
+
+## ライブラリとしての利用方法
+
+本エディタは`src/library/canvas-editor-lib.js`を読み込むことで、他のWebアプリから簡単に再利用できます。以下は最低限の組み込み例です。
+
+```html
+<!-- Editor components & language providers を読み込んだあとに配置 -->
+<script src="src/library/canvas-editor-lib.js"></script>
+<script>
+    const { editor, setLanguage, registerLanguage } = CanvasEditorLibrary.createCanvasEditor({
+        canvas: document.getElementById('editor-canvas'),
+        textarea: document.getElementById('hidden-input'),
+        popup: document.getElementById('popup'),
+        problemsPanel: document.querySelector('#problems-panel ul'),
+        completionList: document.getElementById('completion-list'),
+        languageProviders: {
+            javascript: new JavaScriptLanguageProvider(),
+        },
+        initialLanguage: 'javascript'
+    });
+
+    // 独自DSLをWeb Workerベースで追加
+    const dslProvider = CanvasEditorLibrary.createWorkerLanguageProvider('path/to/dsl-worker.js');
+    registerLanguage('my-dsl', dslProvider);
+    setLanguage('my-dsl');
+    editor.setText('start my DSL...');
+</script>
+```
+
+`createCanvasEditor`は`editor`インスタンスだけでなく、言語切り替え用の`setLanguage`、動的追加用の`registerLanguage`を返します。`editorOptions`で`autoRender: false`や`bindEvents: false`を渡すと、テストやヘッドレス環境での初期化も容易です。
